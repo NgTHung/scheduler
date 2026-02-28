@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated JSON outputs
+*.json
+
+# Sample / generated Excel files
+samples/*.xlsx
+
+# UV lock (optional, remove this line if you want to pin deps)
+uv.lock
+
+# Temp upload directory (Streamlit UI)
+_tmp_upload/
