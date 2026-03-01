@@ -98,8 +98,39 @@ def solve(
     None                    if the problem is infeasible.
     """
 
+    # ---- merge duplicate mentors (same name, different majors/slots) ------ #
+    merged: dict[str, Mentor] = {}
+    for m in mentors:
+        if m.name in merged:
+            existing = merged[m.name]
+            # Combine majors (comma-separated) and slots
+            existing_majors = set(existing.majors)
+            new_majors = set(m.majors)
+            combined = existing_majors | new_majors
+            existing.major = ", ".join(sorted(combined))
+            existing.available_slots = list(
+                dict.fromkeys(existing.available_slots + m.available_slots)
+            )
+        else:
+            # Copy so we don't mutate the original
+            merged[m.name] = Mentor(
+                name=m.name,
+                major=m.major,
+                available_slots=list(m.available_slots),
+            )
+    mentors = list(merged.values())
+
     # ---- build mentor-major lookup ---------------------------------------- #
     mentor_major: dict[str, str] = {m.name: m.major for m in mentors}
+
+    # ---- normalise major names for matching ------------------------------- #
+    def _norm_major(s: str) -> str:
+        return s.strip().lower()
+
+    # Build a set of normalised majors per mentor (supports multi-major)
+    mentor_norm_majors: dict[str, set[str]] = {
+        m.name: {_norm_major(mj) for mj in m.majors} for m in mentors
+    }
 
     # ---- enumerate valid session tuples ----------------------------------- #
     host_avail = {h.name: set(h.available_slots) for h in hosts}
@@ -108,15 +139,23 @@ def solve(
     student_major = {s.name: s.desired_major for s in students}
 
     valid_sessions: list[tuple[str, str, str, str]] = []  # (t, h, m, s)
+    seen_sessions: set[tuple[str, str, str, str]] = set()
     for t in time_slots:
         free_hosts = [h.name for h in hosts if t in host_avail[h.name]]
         free_mentors = [m.name for m in mentors if t in mentor_avail[m.name]]
         free_students = [s.name for s in students if t in student_avail[s.name]]
         for h in free_hosts:
             for m in free_mentors:
+                if h == m:
+                    continue          # same person can't be host and mentor
                 for s in free_students:
-                    if mentor_major[m] == student_major[s]:
-                        valid_sessions.append((t, h, m, s))
+                    if s == h or s == m:
+                        continue      # same person can't fill two roles
+                    key = (t, h, m, s)
+                    if key not in seen_sessions and \
+                       _norm_major(student_major[s]) in mentor_norm_majors[m]:
+                        seen_sessions.add(key)
+                        valid_sessions.append(key)
 
     if verbose:
         print(f"  Valid session candidates: {len(valid_sessions)}")
@@ -145,35 +184,62 @@ def solve(
     x = [LpVariable(f"x_{i}", cat="Binary") for i in range(len(valid_sessions))]
 
     # y[s] — student s is served (coverage indicator)
-    y = {s.name: LpVariable(f"y_{s.name}", cat="Binary") for s in students}
+    y = {s.name: LpVariable(f"y_{i}", cat="Binary") for i, s in enumerate(students)}
 
     # ---- objective: maximise student coverage ----------------------------- #
     prob += lpSum(y[s.name] for s in students), "MaxStudentsCovered"
 
     # ---- C1: host ≤ 1 session per time-slot ------------------------------- #
-    for (t, h), idxs in by_host_time.items():
-        prob += lpSum(x[i] for i in idxs) <= 1, f"HostSlot_{h}_{t}"
+    for ci, ((t, h), idxs) in enumerate(by_host_time.items()):
+        prob += lpSum(x[i] for i in idxs) <= 1, f"C1_{ci}"
 
     # ---- C2: mentor ≤ 1 session per time-slot ----------------------------- #
-    for (t, m), idxs in by_mentor_time.items():
-        prob += lpSum(x[i] for i in idxs) <= 1, f"MentorSlot_{m}_{t}"
+    for ci, ((t, m), idxs) in enumerate(by_mentor_time.items()):
+        prob += lpSum(x[i] for i in idxs) <= 1, f"C2_{ci}"
 
     # ---- C3: student ≤ 1 session per time-slot ---------------------------- #
-    for (t, s), idxs in by_student_time.items():
-        prob += lpSum(x[i] for i in idxs) <= 1, f"StudentSlot_{s}_{t}"
+    for ci, ((t, s), idxs) in enumerate(by_student_time.items()):
+        prob += lpSum(x[i] for i in idxs) <= 1, f"C3_{ci}"
 
     # ---- C4: every mentor in ≥ 1 session ---------------------------------- #
-    for m in mentors:
+    for ci, m in enumerate(mentors):
         idxs = by_mentor[m.name]
-        prob += lpSum(x[i] for i in idxs) >= 1, f"MentorMin_{m.name}"
+        prob += lpSum(x[i] for i in idxs) >= 1, f"C4_{ci}"
 
     # ---- C5: link y[s] to assignments ------------------------------------- #
-    for s in students:
+    for ci, s in enumerate(students):
         idxs = by_student.get(s.name, [])
         if idxs:
-            prob += y[s.name] <= lpSum(x[i] for i in idxs), f"Link_{s.name}"
+            prob += y[s.name] <= lpSum(x[i] for i in idxs), f"C5_{ci}"
         else:
-            prob += y[s.name] == 0, f"Link_{s.name}"
+            prob += y[s.name] == 0, f"C5_{ci}"
+
+    # ---- C6: cross-role no-double-booking --------------------------------- #
+    # If the same person name appears in multiple roles (e.g. host AND student),
+    # they can participate in at most 1 session per time-slot across ALL roles.
+    all_names: set[str] = set()
+    host_names = {h.name for h in hosts}
+    mentor_names = {m.name for m in mentors}
+    student_names = {s.name for s in students}
+    cross_role = (host_names & mentor_names) | (host_names & student_names) | (mentor_names & student_names)
+
+    if cross_role:
+        # Build per-(time, person) index across all roles
+        by_person_time: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for i, (t, h, m, s) in enumerate(valid_sessions):
+            if h in cross_role:
+                by_person_time[(t, h)].append(i)
+            if m in cross_role:
+                by_person_time[(t, m)].append(i)
+            if s in cross_role:
+                by_person_time[(t, s)].append(i)
+
+        ci = 0
+        for (t, person), idxs in by_person_time.items():
+            # Deduplicate indices (a person could be host+student in same tuple)
+            unique_idxs = list(dict.fromkeys(idxs))
+            prob += lpSum(x[i] for i in unique_idxs) <= 1, f"C6_{ci}"
+            ci += 1
 
     # ---- solve ------------------------------------------------------------ #
     solver = PULP_CBC_CMD(msg=int(verbose), timeLimit=time_limit_sec)

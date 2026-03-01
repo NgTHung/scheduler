@@ -32,6 +32,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import re
 import sys
@@ -110,8 +111,22 @@ def parse_shift_text(raw: Any) -> set[int]:
     """
     if raw is None:
         return set()
-    if isinstance(raw, (int, float)):
+    # Excel may auto-convert shift text like "1,11,12" into a date.
+    # Recover candidate shift numbers from day, month, and 2-digit year.
+    # Only include the year component when it looks like an explicit part of
+    # the input (small 2-digit number) rather than an auto-filled current year.
+    if isinstance(raw, (_dt.datetime, _dt.date)):
+        candidates = {raw.day, raw.month}
+        y = raw.year % 100
+        if 1 <= y <= 20:           # e.g. 2012 → 12 (plausible shift)
+            candidates.add(y)
+        return candidates
+    if isinstance(raw, int):
         return {int(raw)}
+    if isinstance(raw, float):
+        if raw == int(raw):          # e.g. 3.0 → shift 3
+            return {int(raw)}
+        # e.g. 11.12 → treat as text "11.12" (shifts 11 and 12)
 
     s = str(raw).strip()
     if s.lower() in _NO_AVAILABILITY:
@@ -122,8 +137,8 @@ def parse_shift_text(raw: Any) -> set[int]:
 
     shifts: set[int] = set()
 
-    # Split by comma or semicolon first (preserves ranges like "5-12")
-    tokens = re.split(r"[,;]+", s)
+    # Split by comma, semicolon, or dot first (preserves ranges like "5-12")
+    tokens = re.split(r"[,;.]+", s)
     for token in tokens:
         token = token.strip()
         if not token:
@@ -165,11 +180,20 @@ def detect_workbook_format(wb) -> str:
 
 
 def _looks_like_date(val: Any) -> bool:
-    """Does this value look like a date column header? (e.g. '13/6', '14-06')"""
+    """Does this value look like a date column header? (e.g. '13/6', '14-06', or a datetime object)"""
     if val is None:
         return False
+    if isinstance(val, (_dt.datetime, _dt.date)):
+        return True
     s = str(val).strip()
     return bool(re.search(r"\d+\s*[/\-\.]\s*\d+", s))
+
+
+def _header_to_day_label(val: Any) -> str:
+    """Convert a header cell value to a day label string (day/month)."""
+    if isinstance(val, (_dt.datetime, _dt.date)):
+        return f"{val.day}/{val.month}"
+    return str(val).strip()
 
 
 def _find_text_layout(ws: Worksheet, role: str) -> dict:
@@ -185,7 +209,7 @@ def _find_text_layout(ws: Worksheet, role: str) -> dict:
         for col in range(1, min((ws.max_column or 20) + 1, 50)):
             val = ws.cell(row=try_row, column=col).value
             if _looks_like_date(val):
-                day_cols.append((col, str(val).strip()))
+                day_cols.append((col, _header_to_day_label(val)))
 
         if day_cols:
             # Normalize day labels so they match across formats

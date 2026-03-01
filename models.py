@@ -14,6 +14,7 @@ Problem:
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+import re
 
 
 @dataclass
@@ -25,11 +26,19 @@ class Host:
         return f"Host({self.name})"
 
 
+_MAJOR_SPLIT_RE = re.compile(r"[,;|/]+")
+
+
 @dataclass
 class Mentor:
     name: str
-    major: str
+    major: str                       # may be multi-valued: "Sales, Marketing"
     available_slots: list[str] = field(default_factory=list)
+
+    @property
+    def majors(self) -> list[str]:
+        """Return list of majors (splits on , ; | /)."""
+        return [m.strip() for m in _MAJOR_SPLIT_RE.split(self.major) if m.strip()]
 
     def __repr__(self) -> str:
         return f"Mentor({self.name}, {self.major})"

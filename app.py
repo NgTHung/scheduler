@@ -430,7 +430,7 @@ def _render_sidebar():
 
         mode = st.radio(
             "Input mode",
-            ["Combined workbook", "Separate files (per role)", "Manual entry"],
+            ["Combined workbook", "Separate files (per role)", "Hybrid (combined + overrides)", "Manual entry"],
             help="Choose how to load your data",
         )
 
@@ -451,6 +451,24 @@ def _render_sidebar():
             if st.button("Load", key="load_separate", type="primary"):
                 _clear_all_data()
                 _load_separate(hosts_file, mentors_file, students_file)
+
+        elif mode == "Hybrid (combined + overrides)":
+            st.caption(
+                "Upload a combined workbook as base, then optionally override "
+                "individual roles with separate files."
+            )
+            combined_file = st.file_uploader(
+                "Combined base workbook",
+                type=["xlsx", "xls"],
+                key="hybrid_combined_upload",
+            )
+            st.caption("Override (leave empty to use combined):")
+            hosts_override = st.file_uploader("Hosts override", type=["xlsx", "xls"], key="hybrid_hosts")
+            mentors_override = st.file_uploader("Mentors override", type=["xlsx", "xls"], key="hybrid_mentors")
+            students_override = st.file_uploader("Students override", type=["xlsx", "xls"], key="hybrid_students")
+            if combined_file and st.button("Load", key="load_hybrid", type="primary"):
+                _clear_all_data()
+                _load_hybrid(combined_file, hosts_override, mentors_override, students_override)
 
         elif mode == "Manual entry":
             st.caption("Configure time slots, then add people in the main area.")
@@ -548,6 +566,68 @@ def _load_separate(hosts_file, mentors_file, students_file):
             st.error(f"Error parsing files: {e}")
         finally:
             for p in paths.values():
+                p.unlink(missing_ok=True)
+
+
+def _load_hybrid(combined_file, hosts_override, mentors_override, students_override):
+    """Load from combined workbook, then override individual roles if provided."""
+    with st.spinner("Parsing hybrid sources..."):
+        paths: list[Path] = []
+        try:
+            # 1) Parse combined base
+            combined_tmp = _save_uploaded_file(combined_file)
+            paths.append(combined_tmp)
+            hosts, mentors, students, base_slots = parse_combined_workbook(str(combined_tmp))
+            slot_lists: list[list[str]] = [base_slots]
+
+            # 2) Override per-role if files provided
+            overrides = [
+                (hosts_override, "host", "hosts"),
+                (mentors_override, "mentor", "mentors"),
+                (students_override, "student", "students"),
+            ]
+            for uploaded, role, label in overrides:
+                if uploaded is None:
+                    continue
+                tmp = _save_uploaded_file(uploaded)
+                paths.append(tmp)
+                entries, slots = parse_workbook(str(tmp), role)
+                slot_lists.append(slots)
+                if role == "host":
+                    hosts = entries
+                elif role == "mentor":
+                    mentors = entries
+                else:
+                    students = entries
+
+            # 3) Merge time slots
+            seen: set[str] = set()
+            all_slots: list[str] = []
+            for slot_list in slot_lists:
+                for s in slot_list:
+                    if s not in seen:
+                        seen.add(s)
+                        all_slots.append(s)
+
+            st.session_state.hosts_data = hosts
+            st.session_state.mentors_data = mentors
+            st.session_state.students_data = students
+            st.session_state.time_slots = all_slots
+            st.session_state.data_loaded = True
+            st.session_state.schedule_result = None
+
+            sources = ["combined base"]
+            for uploaded, _, label in overrides:
+                if uploaded:
+                    sources.append(f"{label} override")
+            st.success(
+                f"Loaded {len(hosts)} hosts, {len(mentors)} mentors, "
+                f"{len(students)} students (from {', '.join(sources)})"
+            )
+        except Exception as e:
+            st.error(f"Error parsing files: {e}")
+        finally:
+            for p in paths:
                 p.unlink(missing_ok=True)
 
 def _render_shift_label_editor():

@@ -51,6 +51,8 @@ pillow==12.1.1
     # via streamlit
 protobuf==6.33.5
     # via streamlit
+pulp==3.3.0
+    # via schedule (pyproject.toml)
 pyarrow==23.0.1
     # via streamlit
 pydeck==0.9.1
