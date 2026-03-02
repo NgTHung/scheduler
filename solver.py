@@ -58,6 +58,7 @@ from models import Host, Mentor, Student, ScheduledSession
 #  Index builder — avoids repeated O(|V|) scans when posting constraints       #
 # --------------------------------------------------------------------------- #
 
+
 def _build_indices(valid_sessions: list[tuple[str, str, str, str]]):
     """Return dicts mapping (time, person) → list of session indices."""
     by_host_time: dict[tuple[str, str], list[int]] = defaultdict(list)
@@ -79,6 +80,7 @@ def _build_indices(valid_sessions: list[tuple[str, str, str, str]]):
 # --------------------------------------------------------------------------- #
 #  Main solver                                                                 #
 # --------------------------------------------------------------------------- #
+
 
 def solve(
     time_slots: list[str],
@@ -147,13 +149,15 @@ def solve(
         for h in free_hosts:
             for m in free_mentors:
                 if h == m:
-                    continue          # same person can't be host and mentor
+                    continue  # same person can't be host and mentor
                 for s in free_students:
                     if s == h or s == m:
-                        continue      # same person can't fill two roles
+                        continue  # same person can't fill two roles
                     key = (t, h, m, s)
-                    if key not in seen_sessions and \
-                       _norm_major(student_major[s]) in mentor_norm_majors[m]:
+                    if (
+                        key not in seen_sessions
+                        and _norm_major(student_major[s]) in mentor_norm_majors[m]
+                    ):
                         seen_sessions.add(key)
                         valid_sessions.append(key)
 
@@ -165,17 +169,18 @@ def solve(
     mentors_in_valid = {m for (_, _, m, _) in valid_sessions}
     impossible_mentors = mentors_with_options - mentors_in_valid
     if impossible_mentors:
-        print(
+        error = (
             "INFEASIBLE — the following mentors have NO valid session "
-            "(no student wants their major, or schedules don't overlap):"
+            + "(no student wants their major, or schedules don't overlap):"
         )
         for mn in sorted(impossible_mentors):
-            print(f"  • {mn} ({mentor_major[mn]})")
-        return None
+            error += (f"  • {mn} ({mentor_major[mn]})")
+        raise Exception(error)
 
     # ---- build index structures ------------------------------------------- #
-    (by_host_time, by_mentor_time, by_student_time,
-     by_mentor, by_student) = _build_indices(valid_sessions)
+    (by_host_time, by_mentor_time, by_student_time, by_mentor, by_student) = (
+        _build_indices(valid_sessions)
+    )
 
     # ---- create ILP ------------------------------------------------------- #
     prob = LpProblem("OrientationScheduling", LpMaximize)
@@ -221,7 +226,11 @@ def solve(
     host_names = {h.name for h in hosts}
     mentor_names = {m.name for m in mentors}
     student_names = {s.name for s in students}
-    cross_role = (host_names & mentor_names) | (host_names & student_names) | (mentor_names & student_names)
+    cross_role = (
+        (host_names & mentor_names)
+        | (host_names & student_names)
+        | (mentor_names & student_names)
+    )
 
     if cross_role:
         # Build per-(time, person) index across all roles
