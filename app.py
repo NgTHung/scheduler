@@ -193,6 +193,16 @@ def _people_to_day_df(
     return pd.DataFrame(cols)
 
 
+def _person_key(p: dict, role: str) -> tuple[str, str]:
+    """Unique key for a person: (name, major). Preserves same-name people with different majors."""
+    name = p.get("name", "")
+    if role == "mentor":
+        return (name, p.get("major", ""))
+    elif role == "student":
+        return (name, p.get("desired_major", ""))
+    return (name, "")
+
+
 def _sync_people_from_day_dfs(
     role: str,
     days: OrderedDict[str, list[str]],
@@ -202,18 +212,20 @@ def _sync_people_from_day_dfs(
     """
     Merge edited per-day DataFrames back into the people list.
     Handles new rows added in any day tab.
+    Uses (name, major) as key to preserve duplicate names with different majors.
     """
     # Collect all known people (preserving original data as base)
-    people_map: dict[str, dict] = {}
+    people_map: dict[tuple[str, str], dict] = {}
     for p in current_people:
-        people_map[p["name"]] = {
+        pk = _person_key(p, role)
+        people_map[pk] = {
             "name": p["name"],
             "available_slots": set(p.get("available_slots", [])),
         }
         if role == "mentor":
-            people_map[p["name"]]["major"] = p.get("major", "")
+            people_map[pk]["major"] = p.get("major", "")
         elif role == "student":
-            people_map[p["name"]]["desired_major"] = p.get("desired_major", "")
+            people_map[pk]["desired_major"] = p.get("desired_major", "")
 
     # Merge in edits from each day tab
     for day_label, day_slots in days.items():
@@ -226,21 +238,24 @@ def _sync_people_from_day_dfs(
             if not name:
                 continue
 
-            if name not in people_map:
-                people_map[name] = {"name": name, "available_slots": set()}
+            major_str = str(row.get("Major", "")).strip() if "Major" in row.index else ""
+            pk = (name, major_str) if role in ("mentor", "student") else (name, "")
+
+            if pk not in people_map:
+                people_map[pk] = {"name": name, "available_slots": set()}
                 if role == "mentor":
-                    people_map[name]["major"] = str(row.get("Major", "")).strip()
+                    people_map[pk]["major"] = major_str
                 elif role == "student":
-                    people_map[name]["desired_major"] = str(row.get("Major", "")).strip()
+                    people_map[pk]["desired_major"] = major_str
 
             # Update major if present
             if role == "mentor" and "Major" in row.index:
-                people_map[name]["major"] = str(row.get("Major", "")).strip()
+                people_map[pk]["major"] = major_str
             elif role == "student" and "Major" in row.index:
-                people_map[name]["desired_major"] = str(row.get("Major", "")).strip()
+                people_map[pk]["desired_major"] = major_str
 
             # Remove old slots for this day, then add checked ones
-            avail: set = people_map[name]["available_slots"]
+            avail: set = people_map[pk]["available_slots"]
             for s in day_slots:
                 avail.discard(s)
             for s in day_slots:
@@ -398,7 +413,54 @@ def _result_to_json_bytes(
     return json.dumps(output, indent=2, ensure_ascii=False).encode("utf-8")
 
 
+def _build_mentor_day_timetable(
+    sessions: list[ScheduledSession],
+    day_label: str,
+    day_slots: list[str],
+) -> pd.DataFrame:
+    """
+    Build mentor timetable for ONE day.
+    Rows = mentors, Columns = shifts.
+    Cells = "Student | Host: host (Major)".
+    """
+    day_sessions = [s for s in sessions if _parse_slot(s.time_slot)[0] == day_label]
+    people_data: dict[str, dict[str, str]] = {}
+
+    for s in day_sessions:
+        person = s.mentor
+        cell = f"{s.student} | Host: {s.host} ({s.major})"
+        if person not in people_data:
+            people_data[person] = {}
+        people_data[person][s.time_slot] = cell
+
+    if not people_data:
+        return pd.DataFrame()
+
+    rows = []
+    for name in sorted(people_data):
+        row: dict[str, str] = {"Tên CVHN": name}
+        for slot in day_slots:
+            header = _slot_col_header(slot)
+            row[header] = people_data[name].get(slot, "")
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+# ---- Major color palette for summary sheet -------------------------------- #
+_MAJOR_COLORS: list[str] = [
+    "DAEEF3",  # light blue
+    "D5E8D4",  # light green
+    "FFF2CC",  # light yellow
+    "F8CECC",  # light red/pink
+    "E1D5E7",  # light purple
+    "FFE6CC",  # light orange
+]
+
+
 def _result_to_excel_bytes(sessions: list[ScheduledSession]) -> bytes:
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+
     all_slots_in_result = sorted(
         set(s.time_slot for s in sessions),
         key=lambda x: st.session_state.time_slots.index(x)
@@ -408,19 +470,108 @@ def _result_to_excel_bytes(sessions: list[ScheduledSession]) -> bytes:
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        # Full sessions list with labels
-        df = _sessions_to_df(sessions, use_labels=True)
-        df.to_excel(writer, sheet_name="All Sessions", index=False)
+        # ---- Per-day mentor timetables ------------------------------------ #
+        for day_label, day_slots in days.items():
+            tt = _build_mentor_day_timetable(sessions, day_label, day_slots)
+            if tt.empty:
+                continue
+            safe_day = day_label.replace("/", "-")
+            sheet_name = f"Ngày {safe_day}"[:31]
+            tt.to_excel(writer, sheet_name=sheet_name, index=False)
 
-        # Per-role per-day timetables
-        for role, role_label in [("host", "Hosts"), ("mentor", "Mentors"), ("student", "Students")]:
-            for day_label, day_slots in days.items():
-                tt = _build_role_day_timetable(sessions, role, day_label, day_slots)
-                if tt.empty:
-                    continue
-                safe_day = day_label.replace("/", "-")
-                sheet = f"{role_label} {safe_day}"[:31]
-                tt.to_excel(writer, sheet_name=sheet, index=False)
+        # ---- Summary tab (grouped by major) ------------------------------- #
+        summary_rows = []
+        for s in sessions:
+            day, shift = _parse_slot(s.time_slot)
+            summary_rows.append({
+                "Ngành": s.major,
+                "Tên CVHN": s.mentor,
+                "Tên Host": s.host,
+                "Ngày": day,
+                "Ca": shift,
+                "NTG": s.student,
+            })
+        if not summary_rows:
+            return buf.getvalue()
+
+        df_summary = pd.DataFrame(summary_rows)
+        # Sort by major then day/shift for clean grouping
+        df_summary = df_summary.sort_values(
+            by=["Ngành", "Ngày", "Ca"],
+            key=lambda col: col if col.name != "Ngày" else col.map(
+                lambda d: st.session_state.time_slots.index(
+                    next((s for s in st.session_state.time_slots if s.startswith(d + "_")), d)
+                ) if any(s.startswith(d + "_") for s in st.session_state.time_slots) else 0
+            ),
+        ).reset_index(drop=True)
+
+        sheet_name = "Tổng hợp"
+        df_summary.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        # ---- Style the summary sheet -------------------------------------- #
+        ws = writer.sheets[sheet_name]
+
+        # Header style
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+
+        # Assign colours to majors in order of appearance
+        major_col_idx = 1  # Column A = Ngành
+        seen_majors: list[str] = []
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=major_col_idx, max_col=major_col_idx):
+            val = row[0].value
+            if val and val not in seen_majors:
+                seen_majors.append(val)
+        major_color_map: dict[str, str] = {}
+        for i, mj in enumerate(seen_majors):
+            major_color_map[mj] = _MAJOR_COLORS[i % len(_MAJOR_COLORS)]
+
+        # Apply row colours and borders
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            major_val = row[0].value
+            fill_color = major_color_map.get(major_val, "FFFFFF")
+            fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+            for cell in row:
+                cell.fill = fill
+                cell.border = thin_border
+                cell.alignment = Alignment(vertical="center")
+
+        # Merge cells in the Ngành column for same major
+        start_row = 2
+        prev_major = ws.cell(row=2, column=1).value
+        for r in range(3, ws.max_row + 2):  # +2 to process last group
+            current = ws.cell(row=r, column=1).value if r <= ws.max_row else None
+            if current != prev_major:
+                if r - 1 > start_row:
+                    ws.merge_cells(
+                        start_row=start_row, start_column=1,
+                        end_row=r - 1, end_column=1,
+                    )
+                    ws.cell(row=start_row, column=1).alignment = Alignment(
+                        horizontal="center", vertical="center", wrap_text=True,
+                    )
+                start_row = r
+                prev_major = current
+
+        # Auto-fit column widths
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 35)
 
     return buf.getvalue()
 

@@ -47,8 +47,13 @@ class Mentor:
 @dataclass
 class Student:
     name: str
-    desired_major: str
+    desired_major: str               # may be multi-valued: "Sales, Marketing"
     available_slots: list[str] = field(default_factory=list)
+
+    @property
+    def desired_majors(self) -> list[str]:
+        """Return list of desired majors (splits on , ; | /)."""
+        return [m.strip() for m in _MAJOR_SPLIT_RE.split(self.desired_major) if m.strip()]
 
     def __repr__(self) -> str:
         return f"Student({self.name}, wants={self.desired_major})"

@@ -122,6 +122,26 @@ def solve(
             )
     mentors = list(merged.values())
 
+    # ---- merge duplicate students (same name, different desired_majors/slots) #
+    merged_s: dict[str, Student] = {}
+    for s in students:
+        if s.name in merged_s:
+            existing = merged_s[s.name]
+            existing_majors = set(existing.desired_majors)
+            new_majors = set(s.desired_majors)
+            combined = existing_majors | new_majors
+            existing.desired_major = ", ".join(sorted(combined))
+            existing.available_slots = list(
+                dict.fromkeys(existing.available_slots + s.available_slots)
+            )
+        else:
+            merged_s[s.name] = Student(
+                name=s.name,
+                desired_major=s.desired_major,
+                available_slots=list(s.available_slots),
+            )
+    students = list(merged_s.values())
+
     # ---- build mentor-major lookup ---------------------------------------- #
     mentor_major: dict[str, str] = {m.name: m.major for m in mentors}
 
@@ -138,7 +158,11 @@ def solve(
     host_avail = {h.name: set(h.available_slots) for h in hosts}
     mentor_avail = {m.name: set(m.available_slots) for m in mentors}
     student_avail = {s.name: set(s.available_slots) for s in students}
-    student_major = {s.name: s.desired_major for s in students}
+
+    # Build a set of normalised desired majors per student (multi-major)
+    student_norm_majors: dict[str, set[str]] = {
+        s.name: {_norm_major(mj) for mj in s.desired_majors} for s in students
+    }
 
     valid_sessions: list[tuple[str, str, str, str]] = []  # (t, h, m, s)
     seen_sessions: set[tuple[str, str, str, str]] = set()
@@ -156,7 +180,7 @@ def solve(
                     key = (t, h, m, s)
                     if (
                         key not in seen_sessions
-                        and _norm_major(student_major[s]) in mentor_norm_majors[m]
+                        and mentor_norm_majors[m] & student_norm_majors[s]
                     ):
                         seen_sessions.add(key)
                         valid_sessions.append(key)
@@ -191,8 +215,16 @@ def solve(
     # y[s] — student s is served (coverage indicator)
     y = {s.name: LpVariable(f"y_{i}", cat="Binary") for i, s in enumerate(students)}
 
-    # ---- objective: maximise student coverage ----------------------------- #
-    prob += lpSum(y[s.name] for s in students), "MaxStudentsCovered"
+    # ---- objective: maximise student coverage, minimise sessions ----------- #
+    # Two-tier: (1) maximise unique students served (primary),
+    #           (2) minimise total sessions (secondary — avoid bloat).
+    # Weight W is large enough that serving one extra student always wins
+    # over saving any number of sessions.
+    W = len(valid_sessions) + 1
+    prob += (
+        lpSum(y[s.name] * W for s in students)
+        - lpSum(x[i] for i in range(len(valid_sessions)))
+    ), "MaxStudentsMinSessions"
 
     # ---- C1: host ≤ 1 session per time-slot ------------------------------- #
     for ci, ((t, h), idxs) in enumerate(by_host_time.items()):
@@ -218,6 +250,26 @@ def solve(
             prob += y[s.name] <= lpSum(x[i] for i in idxs), f"C5_{ci}"
         else:
             prob += y[s.name] == 0, f"C5_{ci}"
+
+    # ---- C7: multi-major students get ≥1 session per desired major -------- #
+    # For each (student, desired_major) pair, require at least one session
+    # with a mentor covering that major — but only when student is served.
+    ci7 = 0
+    for s in students:
+        majors = student_norm_majors[s.name]
+        if len(majors) <= 1:
+            continue  # single-major students already handled by C4/C5
+        s_idxs = set(by_student.get(s.name, []))
+        for mj in majors:
+            # Find session indices where this student is paired with a
+            # mentor whose majors include this specific desired major.
+            matching = [
+                i for i in s_idxs
+                if mj in mentor_norm_majors[valid_sessions[i][2]]
+            ]
+            if matching:
+                prob += lpSum(x[i] for i in matching) >= y[s.name], f"C7_{ci7}"
+            ci7 += 1
 
     # ---- C6: cross-role no-double-booking --------------------------------- #
     # If the same person name appears in multiple roles (e.g. host AND student),
@@ -261,13 +313,26 @@ def solve(
     scheduled: list[ScheduledSession] = []
     for i, (t, h, m, s) in enumerate(valid_sessions):
         if x[i].varValue is not None and x[i].varValue > 0.5:
+            # Determine the specific major for this session by intersecting
+            # the mentor's majors with the student's desired majors.
+            matched = mentor_norm_majors[m] & student_norm_majors[s]
+            if matched:
+                # Pick the original-cased form from the mentor's major list
+                norm_to_orig = {_norm_major(mj): mj for mj in
+                                merged[m].major.replace("|", ",").replace(";", ",").replace("/", ",").split(",")}
+                session_major = next(
+                    (norm_to_orig[nm] for nm in matched if nm in norm_to_orig),
+                    mentor_major[m],
+                )
+            else:
+                session_major = mentor_major[m]
             scheduled.append(
                 ScheduledSession(
                     time_slot=t,
                     host=h,
                     mentor=m,
                     student=s,
-                    major=mentor_major[m],
+                    major=session_major.strip(),
                 )
             )
 
