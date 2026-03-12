@@ -1,5 +1,5 @@
 """
-Excel → JSON converter for the Orientation Event Scheduler.
+Excel -> JSON converter for the Orientation Event Scheduler.
 
 Supports TWO input formats, auto-detected by tab names:
 
@@ -59,17 +59,17 @@ def _normalize_day_label(raw: str) -> str:
 
     Rules:
       • Strip whitespace
-      • Replace  -  .  with  /      ("13-6" → "13/6",  "13.06" → "13/06")
-      • Remove leading zeros in each part  ("14/06" → "14/6")
+      • Replace  -  .  with  /      ("13-6" -> "13/6",  "13.06" -> "13/06")
+      • Remove leading zeros in each part  ("14/06" -> "14/6")
 
     Examples:
-        "13-6"   → "13/6"
-        "14-06"  → "14/6"
-        "13/6"   → "13/6"   (no change)
-        "14/06"  → "14/6"
+        "13-6"   -> "13/6"
+        "14-06"  -> "14/6"
+        "13/6"   -> "13/6"   (no change)
+        "14/06"  -> "14/6"
     """
     s = raw.strip().replace("-", "/").replace(".", "/")
-    # Remove leading zeros: "14/06" → "14/6"
+    # Remove leading zeros: "14/06" -> "14/6"
     parts = s.split("/")
     parts = [p.lstrip("0") or "0" for p in parts]
     return "/".join(parts)
@@ -96,18 +96,18 @@ def parse_shift_text(raw: Any) -> set[int]:
     Parse a free-text availability cell into a set of shift numbers.
 
     Handles all observed patterns:
-        "ca 9"              → {9}
-        "2, 6, 11, 12"     → {2, 6, 11, 12}
-        "Ca 3,5,6,7,8"     → {3, 5, 6, 7, 8}
-        "9 - 10 - 11 - 12" → {9, 10, 11, 12}
-        "5-12"              → {5, 6, 7, 8, 9, 10, 11, 12}
-        "ca 4, 5-9"         → {4, 5, 6, 7, 8, 9}
-        "1;2;3"             → {1, 2, 3}
-        "Dạ ca 2, ca 3"     → {2, 3}
-        "Ca 7, ca 8"        → {7, 8}
-        "ca 11, 12"         → {11, 12}
-        "Không"             → {}
-        ""                  → {}
+        "ca 9"              -> {9}
+        "2, 6, 11, 12"     -> {2, 6, 11, 12}
+        "Ca 3,5,6,7,8"     -> {3, 5, 6, 7, 8}
+        "9 - 10 - 11 - 12" -> {9, 10, 11, 12}
+        "5-12"              -> {5, 6, 7, 8, 9, 10, 11, 12}
+        "ca 4, 5-9"         -> {4, 5, 6, 7, 8, 9}
+        "1;2;3"             -> {1, 2, 3}
+        "Dạ ca 2, ca 3"     -> {2, 3}
+        "Ca 7, ca 8"        -> {7, 8}
+        "ca 11, 12"         -> {11, 12}
+        "Không"             -> {}
+        ""                  -> {}
     """
     if raw is None:
         return set()
@@ -118,15 +118,15 @@ def parse_shift_text(raw: Any) -> set[int]:
     if isinstance(raw, (_dt.datetime, _dt.date)):
         candidates = {raw.day, raw.month}
         y = raw.year % 100
-        if 1 <= y <= 20:           # e.g. 2012 → 12 (plausible shift)
+        if 1 <= y <= 20:           # e.g. 2012 -> 12 (plausible shift)
             candidates.add(y)
         return candidates
     if isinstance(raw, int):
         return {int(raw)}
     if isinstance(raw, float):
-        if raw == int(raw):          # e.g. 3.0 → shift 3
+        if raw == int(raw):          # e.g. 3.0 -> shift 3
             return {int(raw)}
-        # e.g. 11.12 → treat as text "11.12" (shifts 11 and 12)
+        # e.g. 11.12 -> treat as text "11.12" (shifts 11 and 12)
 
     s = str(raw).strip()
     if s.lower() in _NO_AVAILABILITY:
@@ -248,6 +248,9 @@ def _detect_shift_count(ws: Worksheet, header_row: int, start_col: int) -> int:
     return count
 
 
+_CHECKBOX_STRINGS = {"TRUE", "FALSE", "0", "1", "YES", "NO", "Y", "N", "✓", "☑", "X"}
+
+
 def _is_truthy(val: Any) -> bool:
     if val is None:
         return False
@@ -259,34 +262,64 @@ def _is_truthy(val: Any) -> bool:
     return s in ("TRUE", "1", "YES", "Y", "✓", "☑", "X")
 
 
-def _parse_checkbox_hosts(ws: Worksheet, day_label_raw: str):
+def _looks_like_checkbox(val: Any) -> bool:
+    """Does this value look like a checkbox (boolean-ish) cell?"""
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return True
+    if isinstance(val, (int, float)) and val in (0, 1):
+        return True
+    return str(val).strip().upper() in _CHECKBOX_STRINGS
+
+
+def _parse_checkbox_sheet(ws: Worksheet, day_label_raw: str, role: str):
+    """
+    Parse a checkbox-format sheet for any role (host, mentor, student).
+    Auto-detects whether a major column exists.
+    """
     day_label = _normalize_day_label(day_label_raw)
-    HEADER_ROW, DATA_START = 2, 3
-    NAME_COL, SHIFT_START = 2, 3
 
-    n = _detect_shift_count(ws, HEADER_ROW, SHIFT_START)
-    if n == 0:
-        return [], []
+    # Auto-detect header row: row 1 might be a banner/title or the actual header.
+    # The header row contains shift labels in the shift columns (e.g. "Ca 1", "1", etc.).
+    # If row 1 has checkbox-like values in the later columns, it's data -> header is row 1 (unlikely).
+    # If row 2 has more non-empty cells than row 1 in the expected shift area, row 2 is the header.
+    # Simple heuristic: check if row 1 looks like a single merged title vs structured headers.
+    row1_vals = [ws.cell(row=1, column=c).value for c in range(1, min((ws.max_column or 10) + 1, 20))]
+    row2_vals = [ws.cell(row=2, column=c).value for c in range(1, min((ws.max_column or 10) + 1, 20))]
+    row1_filled = sum(1 for v in row1_vals if v is not None)
+    row2_filled = sum(1 for v in row2_vals if v is not None)
 
-    slots = [f"{day_label}_{i}" for i in range(1, n + 1)]
-    entries: list[dict] = []
-    row = DATA_START
-    while True:
-        name = ws.cell(row=row, column=NAME_COL).value
-        if name is None or str(name).strip() == "":
-            break
-        name = str(name).strip()
-        avail = [slots[i] for i in range(n)
-                 if _is_truthy(ws.cell(row=row, column=SHIFT_START + i).value)]
-        entries.append({"name": name, "available_slots": avail})
-        row += 1
-    return entries, slots
+    # If row 2 has more filled cells, row 1 is a banner -> header=2, data=3
+    # If row 1 has >= row 2's count, row 1 is the header -> header=1, data=2
+    if row2_filled > row1_filled:
+        HEADER_ROW, DATA_START = 2, 3
+    else:
+        HEADER_ROW, DATA_START = 1, 2
 
+    # Auto-detect whether a major column exists.
+    # With major:    [id] [major(merged)] [name] [shift1 …]  -> checkboxes start col 4
+    # Without major: [id] [name]          [shift1 …]         -> checkboxes start col 3
+    has_major = False
+    if role != "host":
+        for probe_row in range(DATA_START, min(DATA_START + 5, (ws.max_row or DATA_START) + 1)):
+            val_col3 = ws.cell(row=probe_row, column=3).value
+            val_col4 = ws.cell(row=probe_row, column=4).value
+            if val_col3 is not None and _looks_like_checkbox(val_col3):
+                break
+            if val_col4 is not None and _looks_like_checkbox(val_col4):
+                has_major = True
+                break
+        else:
+            for merged_range in ws.merged_cells.ranges:
+                if merged_range.min_col == 2:
+                    has_major = True
+                    break
 
-def _parse_checkbox_role(ws: Worksheet, day_label_raw: str, role: str):
-    day_label = _normalize_day_label(day_label_raw)
-    HEADER_ROW, DATA_START = 2, 3
-    MAJOR_COL, NAME_COL, SHIFT_START = 2, 3, 4
+    if has_major:
+        MAJOR_COL, NAME_COL, SHIFT_START = 2, 3, 4
+    else:
+        MAJOR_COL, NAME_COL, SHIFT_START = None, 2, 3
 
     n = _detect_shift_count(ws, HEADER_ROW, SHIFT_START)
     if n == 0:
@@ -308,13 +341,18 @@ def _parse_checkbox_role(ws: Worksheet, day_label_raw: str, role: str):
             continue
 
         name = str(name).strip()
-        major_raw = _get_merged_cell_value(ws, row, MAJOR_COL)
-        major = str(major_raw).strip() if major_raw else "UNKNOWN"
         avail = [slots[i] for i in range(n)
                  if _is_truthy(ws.cell(row=row, column=SHIFT_START + i).value)]
 
-        key = "major" if role == "mentor" else "desired_major"
-        entries.append({"name": name, key: major, "available_slots": avail})
+        entry: dict[str, Any] = {"name": name, "available_slots": avail}
+        if role == "mentor":
+            major_raw = _get_merged_cell_value(ws, row, MAJOR_COL) if MAJOR_COL else None
+            entry["major"] = str(major_raw).strip() if major_raw else "UNKNOWN"
+        elif role == "student":
+            major_raw = _get_merged_cell_value(ws, row, MAJOR_COL) if MAJOR_COL else None
+            entry["desired_major"] = str(major_raw).strip() if major_raw else "UNKNOWN"
+
+        entries.append(entry)
         row += 1
     return entries, slots
 
@@ -416,10 +454,7 @@ def parse_workbook(path: str | Path, role: str):
             day_label = str(sheet_name).strip()
             print(f"  Parsing tab '{day_label}' in {fname} (checkbox format) ...")
 
-            if role == "host":
-                entries, slots = _parse_checkbox_hosts(ws, day_label)
-            else:
-                entries, slots = _parse_checkbox_role(ws, day_label, role)
+            entries, slots = _parse_checkbox_sheet(ws, day_label, role)
 
             all_slots.extend(slots)
             for entry in entries:
@@ -453,7 +488,7 @@ def parse_combined_workbook(path: str | Path):
             continue
 
         ws = wb[sheet_name]
-        print(f"  Parsing tab '{sheet_name}' → role={role} in {fname} (text format) ...")
+        print(f"  Parsing tab '{sheet_name}' -> role={role} in {fname} (text format) ...")
         entries, slots, n_shifts = _parse_text_sheet(ws, role)
         global_max_shift = max(global_max_shift, n_shifts)
         result[role] = (entries, slots)
@@ -465,15 +500,22 @@ def parse_combined_workbook(path: str | Path):
     students = result.get("student", ([], []))
 
     # Unify time-slots across all roles
-    seen: set[str] = set()
-    all_slots: list[str] = []
-    for _, slots in [hosts, mentors, students]:
-        for s in slots:
-            if s not in seen:
-                seen.add(s)
-                all_slots.append(s)
+    all_slots = _merge_slot_lists(hosts[1], mentors[1], students[1])
 
     return hosts[0], mentors[0], students[0], all_slots
+
+
+def _merge_slot_lists(*slot_lists: list[str]) -> list[str]:
+    """Merge multiple slot lists, preserving order and removing duplicates."""
+    seen: set[str] = set()
+    merged: list[str] = []
+    for slot_list in slot_lists:
+        for s in slot_list:
+            if s not in seen:
+                seen.add(s)
+                merged.append(s)
+    return merged
+
 
 def convert(
     hosts_path: str | None = None,
@@ -484,7 +526,7 @@ def convert(
     slot_mapping: dict[str, str] | None = None,
 ):
     print(f"\n{'=' * 60}")
-    print("  Excel → JSON Converter")
+    print("  Excel -> JSON Converter")
     print(f"{'=' * 60}\n")
 
     hosts: list[dict] = []
@@ -492,22 +534,17 @@ def convert(
     students: list[dict] = []
     slot_lists: list[list[str]] = []
 
-    
+    # Parse combined workbook as base (if provided)
     combined_roles: dict[str, tuple[list[dict], list[str]]] = {}
     if combined_path:
-        wb = openpyxl.load_workbook(combined_path, data_only=True)
-        fname = Path(combined_path).name
-        for sheet_name in wb.sheetnames:
-            role = _tab_to_role(sheet_name)
-            if role is None:
-                continue
-            ws = wb[sheet_name]
-            print(f"  Parsing tab '{sheet_name}' → role={role} in {fname} (text format) ...")
-            entries, slots, _ = _parse_text_sheet(ws, role)
-            combined_roles[role] = (entries, slots)
-        wb.close()
+        h, m, s, base_slots = parse_combined_workbook(combined_path)
+        combined_roles = {
+            "host": (h, base_slots),
+            "mentor": (m, base_slots),
+            "student": (s, base_slots),
+        }
 
-    
+    # Override per-role if separate files provided
     role_sources = [
         ("host",    hosts_path,    "Hosts"),
         ("mentor",  mentors_path,  "Mentors"),
@@ -520,14 +557,14 @@ def convert(
             print(f"  [{label}] from {src}")
             entries, slots = parse_workbook(override_path, role)
         elif role in combined_roles:
-            src = f"combined workbook"
+            src = "combined workbook"
             print(f"  [{label}] from {src}")
             entries, slots = combined_roles[role]
         else:
             print(f"  [{label}] ⚠  NO SOURCE — skipped")
             entries, slots = [], []
 
-        print(f"       → {len(entries)} {label.lower()}")
+        print(f"       -> {len(entries)} {label.lower()}")
         slot_lists.append(slots)
 
         if role == "host":
@@ -539,14 +576,7 @@ def convert(
 
     print()
 
-    
-    seen: set[str] = set()
-    all_slots: list[str] = []
-    for slot_list in slot_lists:
-        for s in slot_list:
-            if s not in seen:
-                seen.add(s)
-                all_slots.append(s)
+    all_slots = _merge_slot_lists(*slot_lists)
 
     
     if slot_mapping:
