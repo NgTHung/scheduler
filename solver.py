@@ -17,8 +17,17 @@ Decision variables
     y[s] ∈ {0, 1}  for each student s   — student s is served
                                            (appears in ≥ 1 session)
 
+    z[h] ∈ {0, 1}  for each host h      — host h is used
+                                           (appears in ≥ 1 session)
+
+    L ∈ Z≥0                            — maximum sessions assigned to any mentor
+
 Objective
-    maximise  Σ_s  y[s]                 — serve as many students as possible
+    maximise, in priority order:
+        1.  Σ_s y[s]                    — serve as many students as possible
+        2.  Σ_h z[h]                    — use as many different hosts as possible
+        3. -L                           — minimise the busiest mentor's load
+        4. -Σ_v x[v]                    — avoid unnecessary sessions
 
 Hard constraints
     C1  ∀ t ∈ T, h ∈ H :  Σ_{(t,h,*,*) ∈ V}  x[v] ≤ 1
@@ -35,6 +44,12 @@ Hard constraints
 
     C5  ∀ s ∈ S :  y[s]  ≤  Σ_{(*,*,*,s) ∈ V}  x[v]
         (link coverage indicator to actual assignment)
+
+    C6  ∀ h ∈ H :  z[h]  ≤  Σ_{(*,h,*,*) ∈ V}  x[v]
+        (link host-used indicator to actual assignment)
+
+    C7  ∀ m ∈ M :  Σ_{(*,*,m,*) ∈ V}  x[v] ≤ L
+        (L is the maximum mentor session load)
 """
 
 from __future__ import annotations
@@ -64,6 +79,7 @@ def _build_indices(valid_sessions: list[tuple[str, str, str, str]]):
     by_host_time: dict[tuple[str, str], list[int]] = defaultdict(list)
     by_mentor_time: dict[tuple[str, str], list[int]] = defaultdict(list)
     by_student_time: dict[tuple[str, str], list[int]] = defaultdict(list)
+    by_host: dict[str, list[int]] = defaultdict(list)
     by_mentor: dict[str, list[int]] = defaultdict(list)
     by_student: dict[str, list[int]] = defaultdict(list)
 
@@ -71,10 +87,11 @@ def _build_indices(valid_sessions: list[tuple[str, str, str, str]]):
         by_host_time[(t, h)].append(i)
         by_mentor_time[(t, m)].append(i)
         by_student_time[(t, s)].append(i)
+        by_host[h].append(i)
         by_mentor[m].append(i)
         by_student[s].append(i)
 
-    return by_host_time, by_mentor_time, by_student_time, by_mentor, by_student
+    return by_host_time, by_mentor_time, by_student_time, by_host, by_mentor, by_student
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +219,7 @@ def solve(
         raise Exception(error)
 
     # ---- build index structures ------------------------------------------- #
-    (by_host_time, by_mentor_time, by_student_time, by_mentor, by_student) = (
+    (by_host_time, by_mentor_time, by_student_time, by_host, by_mentor, by_student) = (
         _build_indices(valid_sessions)
     )
 
@@ -215,16 +232,28 @@ def solve(
     # y[s] — student s is served (coverage indicator)
     y = {s.name: LpVariable(f"y_{i}", cat="Binary") for i, s in enumerate(students)}
 
-    # ---- objective: maximise student coverage, minimise sessions ----------- #
-    # Two-tier: (1) maximise unique students served (primary),
-    #           (2) minimise total sessions (secondary — avoid bloat).
-    # Weight W is large enough that serving one extra student always wins
-    # over saving any number of sessions.
-    W = len(valid_sessions) + 1
+    # z[h] — host h is used at least once (soft diversity indicator)
+    z = {h.name: LpVariable(f"z_{i}", cat="Binary") for i, h in enumerate(hosts)}
+
+    # L — maximum number of sessions assigned to any mentor
+    max_mentor_load = LpVariable("max_mentor_load", lowBound=0, cat="Integer")
+
+    # ---- objective: maximise students, hosts; minimise mentor load, sessions
+    # Four-tier weights:
+    #   (1) one extra served student beats any host/session tradeoff,
+    #   (2) one extra distinct host beats any mentor-load/session tradeoff,
+    #   (3) lower max mentor load beats any session-count increase,
+    #   (4) fewer sessions wins only after students, hosts, and load are tied.
+    session_weight = 1
+    mentor_load_weight = len(valid_sessions) + 1
+    host_weight = len(valid_sessions) * mentor_load_weight + len(valid_sessions) + 1
+    student_weight = len(hosts) * host_weight + len(valid_sessions) * mentor_load_weight + len(valid_sessions) + 1
     prob += (
-        lpSum(y[s.name] * W for s in students)
-        - lpSum(x[i] for i in range(len(valid_sessions)))
-    ), "MaxStudentsMinSessions"
+        lpSum(y[s.name] * student_weight for s in students)
+        + lpSum(z[h.name] * host_weight for h in hosts)
+        - max_mentor_load * mentor_load_weight
+        - lpSum(x[i] * session_weight for i in range(len(valid_sessions)))
+    ), "MaxStudentsMaxHostsBalanceMentorsMinSessions"
 
     # ---- C1: host ≤ 1 session per time-slot ------------------------------- #
     for ci, ((t, h), idxs) in enumerate(by_host_time.items()):
@@ -251,10 +280,23 @@ def solve(
         else:
             prob += y[s.name] == 0, f"C5_{ci}"
 
-    # ---- C7: multi-major students get ≥1 session per desired major -------- #
+    # ---- C6: link z[h] to host assignments -------------------------------- #
+    for ci, h in enumerate(hosts):
+        idxs = by_host.get(h.name, [])
+        if idxs:
+            prob += z[h.name] <= lpSum(x[i] for i in idxs), f"C6_{ci}"
+        else:
+            prob += z[h.name] == 0, f"C6_{ci}"
+
+    # ---- C7: bound max mentor load ---------------------------------------- #
+    for ci, m in enumerate(mentors):
+        idxs = by_mentor[m.name]
+        prob += lpSum(x[i] for i in idxs) <= max_mentor_load, f"C7_{ci}"
+
+    # ---- C8: multi-major students get ≥1 session per desired major -------- #
     # For each (student, desired_major) pair, require at least one session
     # with a mentor covering that major — but only when student is served.
-    ci7 = 0
+    ci8 = 0
     for s in students:
         majors = student_norm_majors[s.name]
         if len(majors) <= 1:
@@ -268,10 +310,10 @@ def solve(
                 if mj in mentor_norm_majors[valid_sessions[i][2]]
             ]
             if matching:
-                prob += lpSum(x[i] for i in matching) >= y[s.name], f"C7_{ci7}"
-            ci7 += 1
+                prob += lpSum(x[i] for i in matching) >= y[s.name], f"C8_{ci8}"
+            ci8 += 1
 
-    # ---- C6: cross-role no-double-booking --------------------------------- #
+    # ---- C9: cross-role no-double-booking --------------------------------- #
     # If the same person name appears in multiple roles (e.g. host AND student),
     # they can participate in at most 1 session per time-slot across ALL roles.
     all_names: set[str] = set()
@@ -299,7 +341,7 @@ def solve(
         for (t, person), idxs in by_person_time.items():
             # Deduplicate indices (a person could be host+student in same tuple)
             unique_idxs = list(dict.fromkeys(idxs))
-            prob += lpSum(x[i] for i in unique_idxs) <= 1, f"C6_{ci}"
+            prob += lpSum(x[i] for i in unique_idxs) <= 1, f"C9_{ci}"
             ci += 1
 
     # ---- solve ------------------------------------------------------------ #

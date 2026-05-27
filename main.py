@@ -7,6 +7,8 @@ Solves the session-scheduling problem:
   • Mentor ↔ Student must share the same major
   • No person is double-booked within a time-slot
   • Every mentor appears in ≥ 1 session
+  • Prefer using as many different hosts as possible
+  • Prefer balancing session counts across mentors
   • Maximise the number of students served
 
 Usage:
@@ -44,22 +46,31 @@ def print_schedule(sessions):
     print()
 
 
-def print_summary(sessions, mentors, students):
+def print_summary(sessions, hosts, mentors, students):
     print("=" * 78)
     print("  SUMMARY")
     print("=" * 78)
     print(f"  Total sessions scheduled : {len(sessions)}")
+    host_counts = Counter(s.host for s in sessions)
     mentor_counts = Counter(s.mentor for s in sessions)
     student_covered = {s.student for s in sessions}
+    print(f"  Hosts participating      : {len(host_counts)} / {len(hosts)}")
     print(f"  Mentors participating    : {len(mentor_counts)} / {len(mentors)}")
+    print(f"  Max mentor sessions      : {max(mentor_counts.values(), default=0)}")
     print(f"  Students served          : {len(student_covered)} / {len(students)}")
 
     unserved = [s.name for s in students if s.name not in student_covered]
     if unserved:
         print(f"  Students NOT served      : {', '.join(unserved)}")
 
+    print("\n  Per-host breakdown:")
+    for h in hosts:
+        cnt = host_counts.get(h.name, 0)
+        flag = " unused" if cnt == 0 else ""
+        print(f"    {h.name:<16} sessions: {cnt}{flag}")
+
     print("\n  Per-mentor breakdown:")
-    for m in mentors:
+    for m in sorted(mentors, key=lambda mentor: (-mentor_counts.get(mentor.name, 0), mentor.name)):
         cnt = mentor_counts.get(m.name, 0)
         flag = " ✗ MISSING!" if cnt == 0 else ""
         print(f"    {m.name:<16} ({m.major:<12})  sessions: {cnt}{flag}")
@@ -172,7 +183,7 @@ def main():
         sys.exit(1)
 
     print_schedule(result)
-    print_summary(result, mentors, students)
+    print_summary(result, hosts, mentors, students)
     print_constraint_check(result, mentors)
 
 

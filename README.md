@@ -7,7 +7,7 @@ Each **session** pairs exactly 1 Host + 1 Mentor + 1 Student in the same time sl
 - Mentor and student share the same major
 - No person is double-booked in a time slot
 - Every mentor gets at least one session
-- **Objective:** maximise the number of students served
+- **Objective:** maximise students served, then distinct hosts used, then balance mentor load, then minimise extra sessions
 
 ## Features
 
@@ -106,8 +106,14 @@ Shifts 1–12 map to 50-minute slots from 8h00 to 20h50 by default (Shift 1 – 
 | V ⊆ T×H×M×S | Valid tuples (availability + major match) |
 | x[v] ∈ {0,1} | Session v is scheduled |
 | y[s] ∈ {0,1} | Student s is served |
+| z[h] ∈ {0,1} | Host h is used |
+| L | Maximum sessions assigned to any mentor |
 
-**Objective:** max Σ y[s]
+**Objective:** lexicographic priority via weighted objective:
+1. Maximise Σ y[s]
+2. Maximise Σ z[h]
+3. Minimise L
+4. Minimise Σ x[v]
 
 **Constraints:**
 
@@ -116,6 +122,8 @@ Shifts 1–12 map to 50-minute slots from 8h00 to 20h50 by default (Shift 1 – 
 3. Each student ≤ 1 session per time slot
 4. Every mentor ≥ 1 session
 5. y[s] ≤ Σ x[v] linking student coverage
+6. z[h] ≤ Σ x[v] linking host usage
+7. Mentor session count ≤ L
 
 Solved with PuLP's built-in CBC backend (default 300 s time limit).
 

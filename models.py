@@ -9,6 +9,8 @@ Problem:
     that same major.
   - Hosts are NOT restricted by major and may participate in as many
     sessions as needed (but only one session per time-slot).
+  - The solver prefers using as many different hosts as possible.
+  - The solver prefers balancing session counts across mentors.
   - Every mentor must appear in AT LEAST one session.
 """
 

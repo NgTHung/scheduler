@@ -180,8 +180,9 @@ Nhấn nút **"Run Solver"** (màu xanh, bên dưới Data Editor).
   - Student thấy: `Mentor | Host: tên_host`
 
 #### Tab "Summary"
-- **Thống kê:** Tổng số buổi | Mentor tham gia / tổng | Student được xếp / tổng
+- **Thống kê:** Tổng số buổi | Host tham gia / tổng | Mentor tham gia / tổng | Số buổi cao nhất của 1 Mentor | Student được xếp / tổng
 - **Cảnh báo:** Danh sách Student chưa được xếp lịch (nếu có)
+- **Chi tiết theo Host:** Tên, Số buổi, Trạng thái đã dùng/chưa dùng
 - **Chi tiết theo Mentor:** Tên, Ngành, Số buổi, Trạng thái (✅ hoặc ❌)
 - **Chi tiết theo Ngành:** Tên ngành, Số buổi
 - **Kiểm tra ràng buộc:**
@@ -262,7 +263,7 @@ Gồm nhiều sheet:
    Nếu thấy *"Mentors with 0 availability: ..."*, hãy kiểm tra lại file upload hoặc bổ sung ca trong Data Editor.
 
 10. **Mục tiêu xếp lịch:**
-    Hệ thống ưu tiên: **(1)** Tối đa số Student được xếp lịch, **(2)** Tối thiểu tổng số buổi (để tránh lãng phí). Không phải mọi Student đều được đảm bảo có lịch — chỉ có thể xếp khi có mentor phù hợp và ca trùng khớp.
+    Hệ thống ưu tiên: **(1)** Tối đa số Student được xếp lịch, **(2)** Dùng nhiều Host khác nhau nhất có thể, **(3)** Giảm số buổi cao nhất của một Mentor để cân bằng tải, **(4)** Tối thiểu tổng số buổi (để tránh lãng phí). Host không bắt buộc phải có buổi nếu không ghép được lịch hợp lệ.
 
 ### 🟢 Mẹo hữu ích
 
@@ -273,7 +274,7 @@ Gồm nhiều sheet:
     Dùng nút "Save Input (JSON)" hoặc "Save Input (Excel)" để tạo bản backup. Nếu sửa nhầm, có thể load lại từ file này.
 
 13. **Dùng tab Summary sau khi chạy Solver:**
-    Tab này cho bạn cái nhìn tổng quan: bao nhiêu Student chưa được xếp, mentor nào bị thiếu buổi, ngành nào ít buổi — giúp bạn quyết định có cần điều chỉnh dữ liệu và chạy lại không.
+    Tab này cho bạn cái nhìn tổng quan: bao nhiêu Student chưa được xếp, Host nào chưa được dùng, mentor nào bị thiếu buổi, ngành nào ít buổi — giúp bạn quyết định có cần điều chỉnh dữ liệu và chạy lại không.
 
 ---
 

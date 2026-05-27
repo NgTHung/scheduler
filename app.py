@@ -1107,7 +1107,7 @@ def _render_solver():
         with tab_timetable:
             _render_timetable_tab(sessions)
         with tab_summary:
-            _render_summary_tab(sessions, mentors, students)
+            _render_summary_tab(sessions, hosts, mentors, students)
         with tab_export:
             _render_export_tab(sessions)
 
@@ -1198,27 +1198,45 @@ def _render_timetable_tab(sessions: list[ScheduledSession]):
 
 def _render_summary_tab(
     sessions: list[ScheduledSession],
+    hosts: list[Host],
     mentors: list[Mentor],
     students: list[Student],
 ):
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4, col5 = st.columns(5)
+    host_counts = Counter(s.host for s in sessions)
     mentor_counts = Counter(s.mentor for s in sessions)
     student_covered = {s.student for s in sessions}
+    max_mentor_load = max(mentor_counts.values(), default=0)
 
     with col1:
         st.metric("Total Sessions", len(sessions))
     with col2:
-        st.metric("Mentors Active", f"{len(mentor_counts)} / {len(mentors)}")
+        st.metric("Hosts Active", f"{len(host_counts)} / {len(hosts)}")
     with col3:
+        st.metric("Mentors Active", f"{len(mentor_counts)} / {len(mentors)}")
+    with col4:
+        st.metric("Max Mentor Load", max_mentor_load)
+    with col5:
         st.metric("Students Served", f"{len(student_covered)} / {len(students)}")
 
     unserved = [s.name for s in students if s.name not in student_covered]
     if unserved:
         st.warning(f"Students NOT served: {', '.join(unserved)}")
 
+    st.subheader("Per-Host Breakdown")
+    host_rows = []
+    for h in hosts:
+        cnt = host_counts.get(h.name, 0)
+        host_rows.append({
+            "Host": h.name,
+            "Sessions": cnt,
+            "Status": "✅" if cnt > 0 else "Unused",
+        })
+    st.dataframe(pd.DataFrame(host_rows), width='stretch', hide_index=True)
+
     st.subheader("Per-Mentor Breakdown")
     mentor_rows = []
-    for m in mentors:
+    for m in sorted(mentors, key=lambda mentor: (-mentor_counts.get(mentor.name, 0), mentor.name)):
         cnt = mentor_counts.get(m.name, 0)
         mentor_rows.append({
             "Mentor": m.name,
