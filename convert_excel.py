@@ -196,6 +196,27 @@ def _header_to_day_label(val: Any) -> str:
     return str(val).strip()
 
 
+def _norm_header(val: Any) -> str:
+    if val is None:
+        return ""
+    return re.sub(r"\s+", " ", str(val).strip().lower())
+
+
+def _looks_like_id_header(val: Any) -> bool:
+    header = _norm_header(val)
+    return header in {"id", "stt", "no", "no.", "#", "số thứ tự"}
+
+
+def _looks_like_name_header(val: Any) -> bool:
+    header = _norm_header(val)
+    return header in {"name", "tên", "ten", "họ tên", "ho ten", "full name", "fullname"}
+
+
+def _looks_like_major_header(val: Any) -> bool:
+    header = _norm_header(val)
+    return header in {"major", "ngành", "nganh", "chuyên ngành", "chuyen nganh"}
+
+
 def _find_text_layout(ws: Worksheet, role: str) -> dict:
     """
     Auto-detect header row and column layout for a text-format sheet.
@@ -215,13 +236,34 @@ def _find_text_layout(ws: Worksheet, role: str) -> dict:
             # Normalize day labels so they match across formats
             day_cols = [(c, _normalize_day_label(lbl)) for c, lbl in day_cols]
             first_day_col = day_cols[0][0]
-            name_col = first_day_col - 1
+            leading_cols = list(range(1, first_day_col))
+            header_values = {
+                col: ws.cell(row=try_row, column=col).value
+                for col in leading_cols
+            }
 
+            name_col = next(
+                (col for col, val in header_values.items() if _looks_like_name_header(val)),
+                first_day_col - 1,
+            )
             major_col = None
             if role != "host":
-                candidate = first_day_col - 2
-                if candidate >= 1:
-                    major_col = candidate
+                explicit_major_col = next(
+                    (col for col, val in header_values.items() if _looks_like_major_header(val)),
+                    None,
+                )
+                if explicit_major_col is not None:
+                    major_col = explicit_major_col
+                elif first_day_col >= 3:
+                    candidate = first_day_col - 2
+                    candidate_header = header_values.get(candidate)
+                    # Headered text sheets with [id][name][day...] should not
+                    # treat the id column as a missing major column.
+                    if (
+                        not _looks_like_id_header(candidate_header)
+                        and not _looks_like_name_header(candidate_header)
+                    ):
+                        major_col = candidate
 
             return {
                 "header_row": try_row,
@@ -347,10 +389,10 @@ def _parse_checkbox_sheet(ws: Worksheet, day_label_raw: str, role: str):
         entry: dict[str, Any] = {"name": name, "available_slots": avail}
         if role == "mentor":
             major_raw = _get_merged_cell_value(ws, row, MAJOR_COL) if MAJOR_COL else None
-            entry["major"] = str(major_raw).strip() if major_raw else "UNKNOWN"
+            entry["major"] = str(major_raw).strip() if major_raw and str(major_raw).strip() else "UNKNOWN"
         elif role == "student":
             major_raw = _get_merged_cell_value(ws, row, MAJOR_COL) if MAJOR_COL else None
-            entry["desired_major"] = str(major_raw).strip() if major_raw else "UNKNOWN"
+            entry["desired_major"] = str(major_raw).strip() if major_raw and str(major_raw).strip() else "UNKNOWN"
 
         entries.append(entry)
         row += 1
@@ -391,7 +433,7 @@ def _parse_text_sheet(ws: Worksheet, role: str):
         major = None
         if major_col is not None and role != "host":
             major_raw = _get_merged_cell_value(ws, row, major_col)
-            major = str(major_raw).strip() if major_raw else "UNKNOWN"
+            major = str(major_raw).strip() if major_raw and str(major_raw).strip() else "UNKNOWN"
 
         # Parse availability from each day column
         available: list[str] = []
@@ -404,9 +446,9 @@ def _parse_text_sheet(ws: Worksheet, role: str):
 
         entry: dict[str, Any] = {"name": name, "available_slots": available}
         if role == "mentor":
-            entry["major"] = major or "UNKNOWN"
+            entry["major"] = major if major is not None else "UNKNOWN"
         elif role == "student":
-            entry["desired_major"] = major or "UNKNOWN"
+            entry["desired_major"] = major if major is not None else "UNKNOWN"
 
         entries.append(entry)
         row += 1

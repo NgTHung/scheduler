@@ -73,6 +73,31 @@ _default("shift_labels", dict(DEFAULT_SHIFT_LABELS))
 _default("widget_rev", 0)  # increment to force fresh widget keys after clear/reload
 _default("pending_shift_sync", None)  # dict describing pending add/remove shifts
 
+_UNKNOWN_LABELS = {"UNKNOWN", "Unknown", "unknown"}
+
+
+def _clean_major(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    return "" if text in _UNKNOWN_LABELS else text
+
+
+def _raw_major(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _stored_major(value: Any) -> str:
+    text = _raw_major(value)
+    return text if text else "UNKNOWN"
+
+
+def _color_major(value: Any) -> str:
+    return _stored_major(value)
+
+
+def _major_suffix(value: Any) -> str:
+    major = _clean_major(value)
+    return f" ({major})" if major else ""
+
 
 def _clear_all_data():
     """Wipe all loaded data and solver results, reset widget keys."""
@@ -115,7 +140,7 @@ def _input_to_excel_bytes() -> bytes:
                 avail_set = set(p.get("available_slots", []))
                 row: dict[str, Any] = {"Name": p["name"]}
                 if major_key:
-                    row["Major"] = p.get(major_key, "")
+                    row["Major"] = _raw_major(p.get(major_key, ""))
                 for slot in time_slots:
                     row[_full_slot_display(slot)] = "✓" if slot in avail_set else ""
                 rows.append(row)
@@ -176,7 +201,9 @@ def _people_to_day_df(
         avail_set = set(p.get("available_slots", []))
         row: dict[str, Any] = {"Name": p["name"]}
         if role in ("mentor", "student"):
-            row["Major"] = p.get("major", "") if role == "mentor" else p.get("desired_major", "")
+            row["Major"] = _raw_major(
+                p.get("major", "") if role == "mentor" else p.get("desired_major", "")
+            )
         for slot in day_slots:
             row[slot] = slot in avail_set
         rows.append(row)
@@ -197,9 +224,9 @@ def _person_key(p: dict, role: str) -> tuple[str, str]:
     """Unique key for a person: (name, major). Preserves same-name people with different majors."""
     name = p.get("name", "")
     if role == "mentor":
-        return (name, p.get("major", ""))
+        return (name, _raw_major(p.get("major", "")))
     elif role == "student":
-        return (name, p.get("desired_major", ""))
+        return (name, _raw_major(p.get("desired_major", "")))
     return (name, "")
 
 
@@ -223,9 +250,9 @@ def _sync_people_from_day_dfs(
             "available_slots": set(p.get("available_slots", [])),
         }
         if role == "mentor":
-            people_map[pk]["major"] = p.get("major", "")
+            people_map[pk]["major"] = _raw_major(p.get("major", ""))
         elif role == "student":
-            people_map[pk]["desired_major"] = p.get("desired_major", "")
+            people_map[pk]["desired_major"] = _raw_major(p.get("desired_major", ""))
 
     # Merge in edits from each day tab
     for day_label, day_slots in days.items():
@@ -238,7 +265,9 @@ def _sync_people_from_day_dfs(
             if not name:
                 continue
 
-            major_str = str(row.get("Major", "")).strip() if "Major" in row.index else ""
+            major_str = _raw_major(row.get("Major", "")) if "Major" in row.index else ""
+            if role in ("mentor", "student"):
+                major_str = _stored_major(major_str)
             pk = (name, major_str) if role in ("mentor", "student") else (name, "")
 
             if pk not in people_map:
@@ -281,8 +310,22 @@ def _build_model_objects(
     students_data: list[dict],
 ):
     hosts = [Host(name=h["name"], available_slots=h["available_slots"]) for h in hosts_data]
-    mentors = [Mentor(name=m["name"], major=m["major"], available_slots=m["available_slots"]) for m in mentors_data]
-    students = [Student(name=s["name"], desired_major=s["desired_major"], available_slots=s["available_slots"]) for s in students_data]
+    mentors = [
+        Mentor(
+            name=m["name"],
+            major=_stored_major(m.get("major", "")),
+            available_slots=m["available_slots"],
+        )
+        for m in mentors_data
+    ]
+    students = [
+        Student(
+            name=s["name"],
+            desired_major=_stored_major(s.get("desired_major", "")),
+            available_slots=s["available_slots"],
+        )
+        for s in students_data
+    ]
     return hosts, mentors, students
 
 def _sessions_to_df(sessions: list[ScheduledSession], use_labels: bool = True) -> pd.DataFrame:
@@ -293,7 +336,7 @@ def _sessions_to_df(sessions: list[ScheduledSession], use_labels: bool = True) -
             "Host": s.host,
             "Mentor": s.mentor,
             "Student": s.student,
-            "Major": s.major,
+            "Major": _clean_major(s.major),
         })
     return pd.DataFrame(rows)
 
@@ -316,7 +359,7 @@ def _build_role_day_timetable(
     for s in day_sessions:
         if role == "host":
             person = s.host
-            cell = f"{s.mentor} + {s.student} ({s.major})"
+            cell = f"{s.mentor} + {s.student}{_major_suffix(s.major)}"
         elif role == "mentor":
             person = s.mentor
             cell = f"{s.student} | Host: {s.host}"
@@ -421,14 +464,14 @@ def _build_mentor_day_timetable(
     """
     Build mentor timetable for ONE day.
     Rows = mentors, Columns = shifts.
-    Cells = "Student | Host: host (Major)".
+    Cells = "Student\nHost: host (Major)".
     """
     day_sessions = [s for s in sessions if _parse_slot(s.time_slot)[0] == day_label]
     people_data: dict[str, dict[str, str]] = {}
 
     for s in day_sessions:
         person = s.mentor
-        cell = f"{s.student} | Host: {s.host} ({s.major})"
+        cell = f"{s.student}\nHost: {s.host}{_major_suffix(s.major)}"
         if person not in people_data:
             people_data[person] = {}
         people_data[person][s.time_slot] = cell
@@ -467,16 +510,27 @@ def _result_to_excel_bytes(sessions: list[ScheduledSession]) -> bytes:
         if x in st.session_state.time_slots else 0,
     )
     days = _group_slots_by_day(all_slots_in_result)
+    seen_majors: list[str] = []
+    for s in sessions:
+        major = _color_major(s.major)
+        if major not in seen_majors:
+            seen_majors.append(major)
+    major_color_map = {
+        mj: _MAJOR_COLORS[i % len(_MAJOR_COLORS)]
+        for i, mj in enumerate(seen_majors)
+    }
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         # ---- Per-day mentor timetables ------------------------------------ #
+        day_sheet_names: dict[str, str] = {}
         for day_label, day_slots in days.items():
             tt = _build_mentor_day_timetable(sessions, day_label, day_slots)
             if tt.empty:
                 continue
             safe_day = day_label.replace("/", "-")
             sheet_name = f"Ngày {safe_day}"[:31]
+            day_sheet_names[day_label] = sheet_name
             tt.to_excel(writer, sheet_name=sheet_name, index=False)
 
         # ---- Summary tab (grouped by major) ------------------------------- #
@@ -484,7 +538,8 @@ def _result_to_excel_bytes(sessions: list[ScheduledSession]) -> bytes:
         for s in sessions:
             day, shift = _parse_slot(s.time_slot)
             summary_rows.append({
-                "Ngành": s.major,
+                "Ngành": _clean_major(s.major),
+                "_ColorMajor": _color_major(s.major),
                 "Tên CVHN": s.mentor,
                 "Tên Host": s.host,
                 "Ngày": day,
@@ -504,6 +559,8 @@ def _result_to_excel_bytes(sessions: list[ScheduledSession]) -> bytes:
                 ) if any(s.startswith(d + "_") for s in st.session_state.time_slots) else 0
             ),
         ).reset_index(drop=True)
+        summary_color_keys = df_summary["_ColorMajor"].tolist()
+        df_summary = df_summary.drop(columns=["_ColorMajor"])
 
         sheet_name = "Tổng hợp"
         df_summary.to_excel(writer, sheet_name=sheet_name, index=False)
@@ -520,26 +577,50 @@ def _result_to_excel_bytes(sessions: list[ScheduledSession]) -> bytes:
             top=Side(style="thin"),
             bottom=Side(style="thin"),
         )
+
+        # Style per-day timetable sheets with the same major colors.
+        for day_label, sheet_name_for_day in day_sheet_names.items():
+            day_ws = writer.sheets[sheet_name_for_day]
+            for cell in day_ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            session_by_mentor_slot = {
+                (s.mentor, _slot_col_header(s.time_slot)): s
+                for s in sessions
+                if _parse_slot(s.time_slot)[0] == day_label
+            }
+            for row in day_ws.iter_rows(min_row=2, max_row=day_ws.max_row, min_col=1, max_col=day_ws.max_column):
+                mentor_name = row[0].value
+                for cell in row:
+                    cell.border = thin_border
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
+                for cell in row[1:]:
+                    session = session_by_mentor_slot.get((mentor_name, day_ws.cell(row=1, column=cell.column).value))
+                    if session is None:
+                        continue
+                    fill_color = major_color_map.get(_color_major(session.major), "FFFFFF")
+                    cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+
+            for col in day_ws.columns:
+                max_len = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    if cell.value:
+                        max_len = max(max_len, len(str(cell.value)))
+                day_ws.column_dimensions[col_letter].width = min(max_len + 4, 35)
+
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = thin_border
 
-        # Assign colours to majors in order of appearance
-        major_col_idx = 1  # Column A = Ngành
-        seen_majors: list[str] = []
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=major_col_idx, max_col=major_col_idx):
-            val = row[0].value
-            if val and val not in seen_majors:
-                seen_majors.append(val)
-        major_color_map: dict[str, str] = {}
-        for i, mj in enumerate(seen_majors):
-            major_color_map[mj] = _MAJOR_COLORS[i % len(_MAJOR_COLORS)]
-
         # Apply row colours and borders
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            major_val = row[0].value
+        for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column)):
+            major_val = summary_color_keys[row_idx]
             fill_color = major_color_map.get(major_val, "FFFFFF")
             fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
             for cell in row:
@@ -582,6 +663,7 @@ def _render_sidebar():
         mode = st.radio(
             "Input mode",
             ["Combined workbook", "Separate files (per role)", "Hybrid (combined + overrides)", "Manual entry"],
+            index=2,
             help="Choose how to load your data",
         )
 
@@ -648,7 +730,11 @@ def _render_sidebar():
             col2.metric("Mentors", len(st.session_state.mentors_data))
             col3.metric("Students", len(st.session_state.students_data))
 
-            majors = sorted({m.get("major", "?") for m in st.session_state.mentors_data})
+            majors = sorted({
+                _clean_major(m.get("major", ""))
+                for m in st.session_state.mentors_data
+                if _clean_major(m.get("major", ""))
+            })
             if majors:
                 st.caption(f"Majors: {', '.join(majors)}")
 
@@ -1038,7 +1124,11 @@ def _render_role_editor_by_day(role: str, days: OrderedDict[str, list[str]]) -> 
                 "Name": st.column_config.TextColumn("Name", required=True, width="medium"),
             }
             if role in ("mentor", "student"):
-                col_config["Major"] = st.column_config.TextColumn("Major", required=True, width="small")
+                col_config["Major"] = st.column_config.TextColumn(
+                    "Major",
+                    required=True,
+                    width="small",
+                )
 
             for slot in day_slots:
                 header = _slot_col_header(slot)
@@ -1140,8 +1230,8 @@ def _run_solver():
     if result is None:
         st.session_state.solver_error = (
             "INFEASIBLE — no valid schedule exists under the given constraints. "
-            "Check that every mentor has at least one student wanting their major "
-            "with overlapping availability."
+            "Check that every mentor has at least one student with the same major "
+            "and overlapping availability."
         )
         st.session_state.schedule_result = None
     else:
@@ -1240,14 +1330,14 @@ def _render_summary_tab(
         cnt = mentor_counts.get(m.name, 0)
         mentor_rows.append({
             "Mentor": m.name,
-            "Major": m.major,
+            "Major": _clean_major(m.major),
             "Sessions": cnt,
             "Status": "✅" if cnt > 0 else "❌ Missing",
         })
     st.dataframe(pd.DataFrame(mentor_rows), width='stretch', hide_index=True)
 
     st.subheader("Per-Major Breakdown")
-    major_counts = Counter(s.major for s in sessions)
+    major_counts = Counter(_clean_major(s.major) for s in sessions)
     major_rows = [{"Major": maj, "Sessions": cnt} for maj, cnt in sorted(major_counts.items())]
     st.dataframe(pd.DataFrame(major_rows), width='stretch', hide_index=True)
 

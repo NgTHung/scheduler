@@ -6,7 +6,7 @@ Problem:
   - Every person has a set of time-slots they are free.
   - Mentors have a major (e.g. HR, Sales, Marketing).
   - Students have a desired major — they must be paired with a mentor of
-    that same major.
+    that same major. Blank or missing major values are assigned UNKNOWN.
   - Hosts are NOT restricted by major and may participate in as many
     sessions as needed (but only one session per time-slot).
   - The solver prefers using as many different hosts as possible.

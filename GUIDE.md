@@ -35,7 +35,7 @@
 
 ## 2. Nhập dữ liệu (Import)
 
-Ở **thanh bên trái (Sidebar)**, chọn một trong 4 chế độ nhập:
+Ở **thanh bên trái (Sidebar)**, ứng dụng mặc định chọn **Hybrid**. Bạn có thể đổi sang một trong 4 chế độ nhập:
 
 | Chế độ | Mô tả | Khi nào dùng |
 |--------|--------|--------------|
@@ -71,7 +71,8 @@
 - **Tên sheet:** Đặt theo ngày — ví dụ: `13/6`, `14-06`, `14.6` (tự động chuẩn hoá).
 - **Cột:**
   - Host: `STT | Tên | Ca 1 | Ca 2 | ...`
-  - Mentor/Student: `STT | Ngành | Tên | Ca 1 | Ca 2 | ...`
+  - Mentor: `STT | Ngành | Tên | Ca 1 | Ca 2 | ...`
+  - Student: `STT | Ngành | Tên | Ca 1 | Ca 2 | ...`
 - **Giá trị ô ca:** `TRUE`, `FALSE`, `1`, `0`, `YES`, `NO`, `✓`, `☑`, `X`
 
 ### Định dạng B: Text (nhập văn bản)
@@ -199,7 +200,7 @@ Nhấn nút **"Run Solver"** (màu xanh, bên dưới Data Editor).
 
 | Thông báo | Nguyên nhân | Cách xử lý |
 |-----------|-------------|-------------|
-| *"INFEASIBLE"* | Không tìm được lịch hợp lệ | Kiểm tra: mentor và student có ca chung không? Ngành có khớp không? |
+| *"INFEASIBLE"* | Không tìm được lịch hợp lệ | Kiểm tra: mentor và student có ca chung không? Ngành có khớp không? Nếu file không có cột ngành, Mentor và Student đều được gán `UNKNOWN` và có thể ghép với nhau |
 | *"FAIL: Mentor X has 0 sessions"* | Mentor X không được xếp buổi nào | Mỗi mentor **phải** có ít nhất 1 buổi — đây là ràng buộc bắt buộc. Kiểm tra lịch rảnh và ngành của mentor |
 
 ---
@@ -219,10 +220,10 @@ Gồm nhiều sheet:
 
 - **Sheet theo ngày** (ví dụ: "Ngày 13-6", "Ngày 14-6"):
   - Bảng thời khoá biểu của **Mentor**.
-  - Cột: Tên mentor | Ca 1 | Ca 2 | ... (mỗi ô là tên student)
+  - Cột: Tên mentor | Ca 1 | Ca 2 | ... (mỗi ô là tên student, được tô màu theo ngành nếu có)
 
 - **Sheet "Tổng hợp" (Summary):**
-  - Bảng phân nhóm theo **ngành**, có mã màu.
+  - Bảng phân nhóm theo **ngành**, có mã màu. Các giá trị thiếu ngành để trống, không ghi `UNKNOWN`.
   - Cột: Ngành (ô gộp, tô màu) | Mentor | Host | Ngày | Ca | Student
   - Header xanh dương, chữ trắng.
   - Độ rộng cột tự co giãn.
@@ -256,24 +257,27 @@ Gồm nhiều sheet:
 7. **Ghép ngành không phân biệt hoa/thường.**
    "marketing", "Marketing", "MARKETING" đều được coi là cùng một ngành.
 
-8. **Mentor/Student đa ngành:**
+8. **File có hoặc không có cột ngành.**
+   Nếu có cột ngành, hệ thống dùng giá trị trong cột đó; ô trống sẽ được gán `UNKNOWN`. Nếu không có cột ngành, cả Mentor và Student sẽ được gán `UNKNOWN` để vẫn có thể ghép với nhau.
+
+9. **Mentor/Student đa ngành:**
    Nếu ô ngành chứa nhiều giá trị cách bởi `,`, `;`, `|`, hoặc `/` (ví dụ: "Marketing, Sales"), hệ thống hiểu người đó thuộc nhiều ngành. Student đa ngành sẽ được ưu tiên xếp ít nhất 1 buổi cho mỗi ngành mong muốn.
 
-9. **Sidebar hiển thị cảnh báo người có 0 ca rảnh:**
+10. **Sidebar hiển thị cảnh báo người có 0 ca rảnh:**
    Nếu thấy *"Mentors with 0 availability: ..."*, hãy kiểm tra lại file upload hoặc bổ sung ca trong Data Editor.
 
-10. **Mục tiêu xếp lịch:**
+11. **Mục tiêu xếp lịch:**
     Hệ thống ưu tiên: **(1)** Tối đa số Student được xếp lịch, **(2)** Dùng nhiều Host khác nhau nhất có thể, **(3)** Giảm số buổi cao nhất của một Mentor để cân bằng tải, **(4)** Tối thiểu tổng số buổi (để tránh lãng phí). Host không bắt buộc phải có buổi nếu không ghép được lịch hợp lệ.
 
 ### 🟢 Mẹo hữu ích
 
-11. **Kiểm tra dữ liệu sau khi import:**
+12. **Kiểm tra dữ liệu sau khi import:**
     Dù ứng dụng tự xử lý nhiều trường hợp đặc biệt (ngày tháng Excel, công thức...), bạn nên mở tab Data Editor để kiểm tra nhanh: tên, ngành, và các ca có đúng không.
 
-12. **Xuất dữ liệu đầu vào (Save Input) trước khi sửa nhiều:**
+13. **Xuất dữ liệu đầu vào (Save Input) trước khi sửa nhiều:**
     Dùng nút "Save Input (JSON)" hoặc "Save Input (Excel)" để tạo bản backup. Nếu sửa nhầm, có thể load lại từ file này.
 
-13. **Dùng tab Summary sau khi chạy Solver:**
+14. **Dùng tab Summary sau khi chạy Solver:**
     Tab này cho bạn cái nhìn tổng quan: bao nhiêu Student chưa được xếp, Host nào chưa được dùng, mentor nào bị thiếu buổi, ngành nào ít buổi — giúp bạn quyết định có cần điều chỉnh dữ liệu và chạy lại không.
 
 ---

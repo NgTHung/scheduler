@@ -4,7 +4,7 @@ Automated scheduling system for university orientation events. Given hosts, ment
 
 Each **session** pairs exactly 1 Host + 1 Mentor + 1 Student in the same time slot, subject to:
 
-- Mentor and student share the same major
+- Mentor and student share the same major; blank/missing major values use `UNKNOWN`
 - No person is double-booked in a time slot
 - Every mentor gets at least one session
 - **Objective:** maximise students served, then distinct hosts used, then balance mentor load, then minimise extra sessions
@@ -37,6 +37,8 @@ uv run streamlit run app.py
 # or
 streamlit run app.py
 ```
+
+The import sidebar opens in Hybrid mode by default, so a combined workbook can be loaded with optional per-role overrides.
 
 ### Run from the CLI
 
