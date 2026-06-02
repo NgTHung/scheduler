@@ -17,6 +17,9 @@ Decision variables
     y[s] ∈ {0, 1}  for each student s   — student s is served
                                            (appears in ≥ 1 session)
 
+    u[m] ∈ {0, 1}  for each mentor m    — mentor m is used
+                                           (appears in ≥ 1 session)
+
     z[h] ∈ {0, 1}  for each host h      — host h is used
                                            (appears in ≥ 1 session)
 
@@ -25,9 +28,10 @@ Decision variables
 Objective
     maximise, in priority order:
         1.  Σ_s y[s]                    — serve as many students as possible
-        2.  Σ_h z[h]                    — use as many different hosts as possible
-        3. -L                           — minimise the busiest mentor's load
-        4. -Σ_v x[v]                    — avoid unnecessary sessions
+        2.  Σ_m u[m]                    — use as many different mentors as possible
+        3.  Σ_h z[h]                    — use as many different hosts as possible
+        4. -L                           — minimise the busiest mentor's load
+        5. -Σ_v x[v]                    — avoid unnecessary sessions
 
 Hard constraints
     C1  ∀ t ∈ T, h ∈ H :  Σ_{(t,h,*,*) ∈ V}  x[v] ≤ 1
@@ -39,14 +43,14 @@ Hard constraints
     C3  ∀ t ∈ T, s ∈ S :  Σ_{(t,*,*,s) ∈ V}  x[v] ≤ 1
         (a student is in at most one session per time-slot)
 
-    C4  ∀ m ∈ M :  Σ_{(*,*,m,*) ∈ V}  x[v] ≥ 1
-        (every mentor must be scheduled at least once)
+    C4  ∀ s ∈ S :  y[s]  ↔  Σ_{(*,*,*,s) ∈ V}  x[v] ≥ 1
+        (link coverage indicator to actual assignments)
 
-    C5  ∀ s ∈ S :  y[s]  ≤  Σ_{(*,*,*,s) ∈ V}  x[v]
-        (link coverage indicator to actual assignment)
+    C5  ∀ m ∈ M :  u[m]  ↔  Σ_{(*,*,m,*) ∈ V}  x[v] ≥ 1
+        (link mentor-used indicator to actual assignments)
 
-    C6  ∀ h ∈ H :  z[h]  ≤  Σ_{(*,h,*,*) ∈ V}  x[v]
-        (link host-used indicator to actual assignment)
+    C6  ∀ h ∈ H :  z[h]  ↔  Σ_{(*,h,*,*) ∈ V}  x[v] ≥ 1
+        (link host-used indicator to actual assignments)
 
     C7  ∀ m ∈ M :  Σ_{(*,*,m,*) ∈ V}  x[v] ≤ L
         (L is the maximum mentor session load)
@@ -205,19 +209,6 @@ def solve(
     if verbose:
         print(f"  Valid session candidates: {len(valid_sessions)}")
 
-    # ---- quick infeasibility check ---------------------------------------- #
-    mentors_with_options = {m.name for m in mentors}
-    mentors_in_valid = {m for (_, _, m, _) in valid_sessions}
-    impossible_mentors = mentors_with_options - mentors_in_valid
-    if impossible_mentors:
-        error = (
-            "INFEASIBLE — the following mentors have NO valid session "
-            + "(no student wants their major, or schedules don't overlap):"
-        )
-        for mn in sorted(impossible_mentors):
-            error += (f"  • {mn} ({mentor_major[mn]})")
-        raise Exception(error)
-
     # ---- build index structures ------------------------------------------- #
     (by_host_time, by_mentor_time, by_student_time, by_host, by_mentor, by_student) = (
         _build_indices(valid_sessions)
@@ -232,28 +223,34 @@ def solve(
     # y[s] — student s is served (coverage indicator)
     y = {s.name: LpVariable(f"y_{i}", cat="Binary") for i, s in enumerate(students)}
 
+    # u[m] — mentor m is used at least once (soft coverage indicator)
+    u = {m.name: LpVariable(f"u_{i}", cat="Binary") for i, m in enumerate(mentors)}
+
     # z[h] — host h is used at least once (soft diversity indicator)
     z = {h.name: LpVariable(f"z_{i}", cat="Binary") for i, h in enumerate(hosts)}
 
     # L — maximum number of sessions assigned to any mentor
     max_mentor_load = LpVariable("max_mentor_load", lowBound=0, cat="Integer")
 
-    # ---- objective: maximise students, hosts; minimise mentor load, sessions
-    # Four-tier weights:
-    #   (1) one extra served student beats any host/session tradeoff,
-    #   (2) one extra distinct host beats any mentor-load/session tradeoff,
-    #   (3) lower max mentor load beats any session-count increase,
-    #   (4) fewer sessions wins only after students, hosts, and load are tied.
+    # ---- objective: maximise students, mentors, hosts; minimise load/sessions
+    # Five-tier weights:
+    #   (1) one extra served student beats any mentor/host/load/session tradeoff,
+    #   (2) one extra active mentor beats any host/load/session tradeoff,
+    #   (3) one extra distinct host beats any mentor-load/session tradeoff,
+    #   (4) lower max mentor load beats any session-count increase,
+    #   (5) fewer sessions wins only after students, mentors, hosts, and load tie.
     session_weight = 1
     mentor_load_weight = len(valid_sessions) + 1
     host_weight = len(valid_sessions) * mentor_load_weight + len(valid_sessions) + 1
-    student_weight = len(hosts) * host_weight + len(valid_sessions) * mentor_load_weight + len(valid_sessions) + 1
+    mentor_weight = len(hosts) * host_weight + len(valid_sessions) * mentor_load_weight + len(valid_sessions) + 1
+    student_weight = len(mentors) * mentor_weight + len(hosts) * host_weight + len(valid_sessions) * mentor_load_weight + len(valid_sessions) + 1
     prob += (
         lpSum(y[s.name] * student_weight for s in students)
+        + lpSum(u[m.name] * mentor_weight for m in mentors)
         + lpSum(z[h.name] * host_weight for h in hosts)
         - max_mentor_load * mentor_load_weight
         - lpSum(x[i] * session_weight for i in range(len(valid_sessions)))
-    ), "MaxStudentsMaxHostsBalanceMentorsMinSessions"
+    ), "MaxStudentsMaxMentorsMaxHostsBalanceMentorsMinSessions"
 
     # ---- C1: host ≤ 1 session per time-slot ------------------------------- #
     for ci, ((t, h), idxs) in enumerate(by_host_time.items()):
@@ -267,24 +264,39 @@ def solve(
     for ci, ((t, s), idxs) in enumerate(by_student_time.items()):
         prob += lpSum(x[i] for i in idxs) <= 1, f"C3_{ci}"
 
-    # ---- C4: every mentor in ≥ 1 session ---------------------------------- #
-    for ci, m in enumerate(mentors):
-        idxs = by_mentor[m.name]
-        prob += lpSum(x[i] for i in idxs) >= 1, f"C4_{ci}"
-
-    # ---- C5: link y[s] to assignments ------------------------------------- #
+    # ---- C4: link y[s] to assignments ------------------------------------- #
+    ci4_link = 0
     for ci, s in enumerate(students):
         idxs = by_student.get(s.name, [])
         if idxs:
-            prob += y[s.name] <= lpSum(x[i] for i in idxs), f"C5_{ci}"
+            prob += y[s.name] <= lpSum(x[i] for i in idxs), f"C4_{ci}"
+            for i in idxs:
+                prob += x[i] <= y[s.name], f"C4_link_{ci4_link}"
+                ci4_link += 1
         else:
-            prob += y[s.name] == 0, f"C5_{ci}"
+            prob += y[s.name] == 0, f"C4_{ci}"
+
+    # ---- C5: link u[m] to mentor assignments ------------------------------ #
+    ci5_link = 0
+    for ci, m in enumerate(mentors):
+        idxs = by_mentor.get(m.name, [])
+        if idxs:
+            prob += u[m.name] <= lpSum(x[i] for i in idxs), f"C5_{ci}"
+            for i in idxs:
+                prob += x[i] <= u[m.name], f"C5_link_{ci5_link}"
+                ci5_link += 1
+        else:
+            prob += u[m.name] == 0, f"C5_{ci}"
 
     # ---- C6: link z[h] to host assignments -------------------------------- #
+    ci6_link = 0
     for ci, h in enumerate(hosts):
         idxs = by_host.get(h.name, [])
         if idxs:
             prob += z[h.name] <= lpSum(x[i] for i in idxs), f"C6_{ci}"
+            for i in idxs:
+                prob += x[i] <= z[h.name], f"C6_link_{ci6_link}"
+                ci6_link += 1
         else:
             prob += z[h.name] == 0, f"C6_{ci}"
 
@@ -300,7 +312,7 @@ def solve(
     for s in students:
         majors = student_norm_majors[s.name]
         if len(majors) <= 1:
-            continue  # single-major students already handled by C4/C5
+            continue  # single-major students already handled by C4
         s_idxs = set(by_student.get(s.name, []))
         for mj in majors:
             # Find session indices where this student is paired with a

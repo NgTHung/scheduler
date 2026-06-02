@@ -99,6 +99,10 @@ def _major_suffix(value: Any) -> str:
     return f" ({major})" if major else ""
 
 
+def _norm_major_text(value: Any) -> str:
+    return _stored_major(value).strip().lower()
+
+
 def _clear_all_data():
     """Wipe all loaded data and solver results, reset widget keys."""
     st.session_state.hosts_data = []
@@ -414,17 +418,128 @@ def _constraint_check(
             msgs.append(f"FAIL: Student **{key[1]}** double-booked at {_full_slot_display(key[0])}")
             ok = False
 
-    mentor_names = {m.name for m in mentors}
-    scheduled_mentors = {s.mentor for s in sessions}
-    missing = mentor_names - scheduled_mentors
-    if missing:
-        for mn in sorted(missing):
-            msgs.append(f"FAIL: Mentor **{mn}** has 0 sessions")
-        ok = False
-
     if ok:
-        msgs.append("ALL CONSTRAINTS SATISFIED")
+        msgs.append("ALL HARD CONSTRAINTS SATISFIED")
     return ok, msgs
+
+
+def _mentor_unscheduled_reasons(
+    sessions: list[ScheduledSession],
+    hosts: list[Host],
+    mentors: list[Mentor],
+    students: list[Student],
+) -> dict[str, str]:
+    """Explain why mentors with zero scheduled sessions had no selected tuple."""
+    scheduled_mentors = {s.mentor for s in sessions}
+    student_covered = {s.student for s in sessions}
+    busy_by_time: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    for s in sessions:
+        busy_by_time[(s.time_slot, s.host)].append("host")
+        busy_by_time[(s.time_slot, s.mentor)].append("mentor")
+        busy_by_time[(s.time_slot, s.student)].append("student")
+
+    reasons: dict[str, str] = {}
+    for mentor in mentors:
+        if mentor.name in scheduled_mentors:
+            continue
+
+        mentor_slots = set(mentor.available_slots)
+        if not mentor_slots:
+            reasons[mentor.name] = "No availability entered for this mentor."
+            continue
+
+        mentor_majors = {_norm_major_text(mj) for mj in mentor.majors}
+        matching_students = [
+            student
+            for student in students
+            if mentor_majors & {_norm_major_text(mj) for mj in student.desired_majors}
+        ]
+        if not matching_students:
+            reasons[mentor.name] = "No student requested this mentor's major."
+            continue
+
+        free_hosts_by_slot = {
+            slot: [
+                host for host in hosts
+                if slot in host.available_slots and host.name != mentor.name
+            ]
+            for slot in mentor_slots
+        }
+        free_students_by_slot = {
+            slot: [
+                student for student in matching_students
+                if slot in student.available_slots and student.name != mentor.name
+            ]
+            for slot in mentor_slots
+        }
+
+        has_host_overlap = any(free_hosts_by_slot.values())
+        has_student_overlap = any(free_students_by_slot.values())
+        candidate_slots = [
+            slot for slot in mentor_slots
+            if free_hosts_by_slot[slot] and free_students_by_slot[slot]
+        ]
+
+        if not has_host_overlap and not has_student_overlap:
+            reasons[mentor.name] = (
+                "No overlapping slot has both an available host and a matching-major student."
+            )
+            continue
+        if not has_host_overlap:
+            reasons[mentor.name] = "No host is available during this mentor's available slots."
+            continue
+        if not has_student_overlap:
+            reasons[mentor.name] = (
+                "No matching-major student is available during this mentor's available slots."
+            )
+            continue
+        if not candidate_slots:
+            reasons[mentor.name] = (
+                "Host and matching-student availability do not overlap in the same slot."
+            )
+            continue
+
+        blockers = Counter()
+        addable_candidate = False
+        candidate_students: set[str] = set()
+        for slot in candidate_slots:
+            for host in free_hosts_by_slot[slot]:
+                for student in free_students_by_slot[slot]:
+                    candidate_students.add(student.name)
+                    blocked = False
+                    for person in (host.name, mentor.name, student.name):
+                        if busy_by_time.get((slot, person)):
+                            blockers.update(busy_by_time[(slot, person)])
+                            blocked = True
+                    if not blocked:
+                        addable_candidate = True
+
+        if not addable_candidate:
+            if blockers and blockers["student"] >= blockers["host"]:
+                reasons[mentor.name] = (
+                    "All matching students are already booked in the overlapping slots."
+                )
+            elif blockers["host"]:
+                reasons[mentor.name] = (
+                    "All available hosts are already booked in the overlapping slots."
+                )
+            else:
+                reasons[mentor.name] = (
+                    "Every valid slot is blocked by a selected-schedule conflict."
+                )
+            continue
+
+        if candidate_students and candidate_students <= student_covered:
+            reasons[mentor.name] = (
+                "Valid options existed, but candidate students were already served by other mentors."
+            )
+        else:
+            reasons[mentor.name] = (
+                "Valid options existed, but the optimizer left this mentor inactive after higher-priority objectives and load balancing."
+            )
+
+    return reasons
 
 
 def _result_to_json_bytes(
@@ -1230,8 +1345,8 @@ def _run_solver():
     if result is None:
         st.session_state.solver_error = (
             "INFEASIBLE — no valid schedule exists under the given constraints. "
-            "Check that every mentor has at least one student with the same major "
-            "and overlapping availability."
+            "Check that students have matching-major mentors with overlapping "
+            "availability, and that hosts are available."
         )
         st.session_state.schedule_result = None
     else:
@@ -1326,13 +1441,15 @@ def _render_summary_tab(
 
     st.subheader("Per-Mentor Breakdown")
     mentor_rows = []
+    unscheduled_reasons = _mentor_unscheduled_reasons(sessions, hosts, mentors, students)
     for m in sorted(mentors, key=lambda mentor: (-mentor_counts.get(mentor.name, 0), mentor.name)):
         cnt = mentor_counts.get(m.name, 0)
         mentor_rows.append({
             "Mentor": m.name,
             "Major": _clean_major(m.major),
             "Sessions": cnt,
-            "Status": "✅" if cnt > 0 else "❌ Missing",
+            "Status": "Active" if cnt > 0 else "Not scheduled",
+            "Reason": "" if cnt > 0 else unscheduled_reasons.get(m.name, "No valid reason available."),
         })
     st.dataframe(pd.DataFrame(mentor_rows), width='stretch', hide_index=True)
 

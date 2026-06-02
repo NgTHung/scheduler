@@ -201,7 +201,7 @@ Nhấn nút **"Run Solver"** (màu xanh, bên dưới Data Editor).
 | Thông báo | Nguyên nhân | Cách xử lý |
 |-----------|-------------|-------------|
 | *"INFEASIBLE"* | Không tìm được lịch hợp lệ | Kiểm tra: mentor và student có ca chung không? Ngành có khớp không? Nếu file không có cột ngành, Mentor và Student đều được gán `UNKNOWN` và có thể ghép với nhau |
-| *"FAIL: Mentor X has 0 sessions"* | Mentor X không được xếp buổi nào | Mỗi mentor **phải** có ít nhất 1 buổi — đây là ràng buộc bắt buộc. Kiểm tra lịch rảnh và ngành của mentor |
+| Mentor có trạng thái *Not scheduled* | Mentor X không được xếp buổi nào | Đây không còn là lỗi bắt buộc. Xem cột *Reason* trong tab Summary để biết do thiếu lịch rảnh, thiếu student cùng ngành, thiếu ca trùng với host/student, hoặc do xung đột với lịch đã chọn |
 
 ---
 
@@ -243,8 +243,8 @@ Gồm nhiều sheet:
 3. **Xoá ca khỏi Shift Labels sẽ mất dữ liệu vĩnh viễn.**
    Tất cả lịch rảnh của ca bị xoá sẽ biến mất, không thể hoàn tác.
 
-4. **Mỗi Mentor phải có ít nhất 1 buổi** — đây là ràng buộc cứng của hệ thống.
-   Nếu có mentor không thể xếp được (do không khớp ngành hoặc không khớp lịch), Solver sẽ báo *INFEASIBLE*.
+4. **Ưu tiên dùng nhiều Mentor nhất có thể** — mentor không được xếp buổi sẽ xuất hiện trong Summary với lý do cụ thể.
+   Nếu có mentor không thể xếp được (do không khớp ngành hoặc không khớp lịch), Solver vẫn chạy và tab Summary sẽ ghi lý do mentor đó không có buổi.
 
 ### 🟡 Lưu ý vận hành
 

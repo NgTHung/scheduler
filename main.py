@@ -6,7 +6,7 @@ Solves the session-scheduling problem:
   • Each session = 1 Host + 1 Mentor + 1 Student
   • Mentor ↔ Student must share the same major
   • No person is double-booked within a time-slot
-  • Every mentor appears in ≥ 1 session
+  • Prefer using as many different mentors as possible
   • Prefer using as many different hosts as possible
   • Prefer balancing session counts across mentors
   • Maximise the number of students served
@@ -118,17 +118,8 @@ def print_constraint_check(sessions, mentors):
         # (We trust the solver, but let's verify)
         pass  # already encoded in ScheduledSession.major
 
-    # C5: every mentor ≥ 1
-    mentor_names = {m.name for m in mentors}
-    scheduled_mentors = {s.mentor for s in sessions}
-    missing = mentor_names - scheduled_mentors
-    if missing:
-        for mn in missing:
-            print(f"  FAIL  Mentor {mn} has 0 sessions")
-        ok = False
-
     if ok:
-        print("  ALL CONSTRAINTS SATISFIED ")
+        print("  ALL HARD CONSTRAINTS SATISFIED ")
     print()
     return ok
 
